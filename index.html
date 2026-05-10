@@ -184,6 +184,15 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 
   <script type="text/babel">
+    /**
+     * Ohne diese Zeile kompiliert Babel 7.x JSX oft auf „automatic runtime“ und erzeugt
+     * import { jsx } from "react/jsx-runtime" — das gibt es im UMD-Bundle nicht → die App
+     * startet nie; es bleibt nur „Shelfmade lädt …“.
+     * @see https://babeljs.io/docs/babel-plugin-transform-react-jsx#runtime
+     */
+    /** @jsxRuntime classic */
+    /** @jsxFrag React.Fragment */
+
     const { useState, useEffect, useCallback, useMemo, useRef, Component } = React;
 
     /* ─── Supabase Projekt-Einstellungen (Project Settings → API) ─── */
@@ -790,7 +799,7 @@
       );
     }
 
-    /** Nach Klick auf E-Mail-Link: neues Passwort setzen */}
+    /** Nach Klick auf E-Mail-Link: neues Passwort setzen */
     function PasswordRecoveryScreen({ sb, onDone, toast }) {
       const [pw, setPw] = useState("");
       const [pw2, setPw2] = useState("");
@@ -2486,6 +2495,23 @@
         else document.body.insertAdjacentHTML("beforeend", inner);
       }
     })();
+  </script>
+
+  <!-- Kein Babel: zeigt nach Timeout einen Hinweis, falls Skripte nicht laufen -->
+  <script>
+    window.setTimeout(function shelfmadeBootWatch() {
+      var boot = document.getElementById("sm-static-boot");
+      if (!boot || !boot.isConnected) return;
+      boot.style.flexDirection = "column";
+      boot.style.gap = "14px";
+      boot.style.padding = "28px 20px";
+      boot.innerHTML =
+        "<strong style=\"font-size:17px;display:block;margin-bottom:6px\">Die App startet nicht</strong>"+
+        "<span style=\"opacity:.93;font-size:14px;line-height:1.55;display:block;margin-bottom:8px\">"+
+        "Typisch: JSX‑Runtime („react/jsx-runtime“) im Browser ohne Bundler, oder Skripte von CDN blockiert "+
+        "(cdn.jsdelivr.net / cdnjs cloudflare.com). Konsole&nbsp;(F12) und Tab <strong>Netzwerk</strong> prüfen.</span>"+
+        "<button type=\"button\" onclick=\"location.reload()\" style=\"margin-top:8px;padding:10px 18px;font-weight:700;font-family:inherit;border:none;border-radius:10px;background:#D4B05E;color:#4A2A1F;cursor:pointer\">Neu laden</button>";
+    }, 14000);
   </script>
 </body>
 </html>
