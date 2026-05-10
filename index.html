@@ -772,7 +772,7 @@
               </p>
             )}
             {err && <p style={{ color:"#e88", fontSize:13, marginBottom:12 }}>{err}</p>}
-            <Btn accent={P.goldLight} disabled={busy} style={{ width:"100%", justifyContent:"center" }}>
+            <Btn type="submit" accent={P.goldLight} disabled={busy} style={{ width:"100%", justifyContent:"center" }}>
               {busy ? "…" : mode === "forgot" ? "Link anfordern" : mode === "login" ? "Anmelden" : "Registrieren"}
             </Btn>
           </form>
@@ -836,7 +836,7 @@
             <input style={inp} type="password" autoComplete="new-password" placeholder="Neues Passwort" value={pw} onChange={e=>setPw(e.target.value)}/>
             <input style={inp} type="password" autoComplete="new-password" placeholder="Passwort wiederholen" value={pw2} onChange={e=>setPw2(e.target.value)}/>
             {err && <p style={{ color:"#e88", fontSize:13, marginBottom:12 }}>{err}</p>}
-            <Btn accent={P.goldLight} disabled={busy} style={{ width:"100%", justifyContent:"center" }}>
+            <Btn type="submit" accent={P.goldLight} disabled={busy} style={{ width:"100%", justifyContent:"center" }}>
               {busy ? "Speichern…" : "Passwort speichern"}
             </Btn>
           </form>
