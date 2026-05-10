@@ -214,13 +214,30 @@
     /** ≤640px: Tab-Leiste unten, kompakte Layouts */
     function useMobileLayout() {
       const mq = "(max-width: 640px)";
-      const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia(mq).matches);
+      function readMatch() {
+        if (typeof window === "undefined") return false;
+        try {
+          const m = window.matchMedia(mq);
+          return !!(m && m.matches);
+        } catch (_) {
+          return window.innerWidth <= 640;
+        }
+      }
+      const [isMobile, setIsMobile] = useState(readMatch);
       useEffect(() => {
-        const m = window.matchMedia(mq);
-        const handler = () => setIsMobile(m.matches);
-        m.addEventListener("change", handler);
-        setIsMobile(m.matches);
-        return () => m.removeEventListener("change", handler);
+        try {
+          const m = window.matchMedia(mq);
+          if (!m?.addEventListener) return undefined;
+          const handler = () => setIsMobile(!!m.matches);
+          m.addEventListener("change", handler);
+          setIsMobile(!!m.matches);
+          return () => m.removeEventListener("change", handler);
+        } catch (_) {
+          const onResize = () => setIsMobile(window.innerWidth <= 640);
+          onResize();
+          window.addEventListener("resize", onResize);
+          return () => window.removeEventListener("resize", onResize);
+        }
       }, []);
       return isMobile;
     }
@@ -321,14 +338,18 @@
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
       const mod = typeof supabase !== "undefined" ? supabase : globalThis.supabase;
       if (!mod?.createClient) return null;
-      return mod.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-        auth: {
-          persistSession: true,
-          autoRefreshToken: true,
-          detectSessionInUrl: true,
-          flowType: "pkce",
-        },
-      });
+      try {
+        return mod.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+          auth: {
+            persistSession: true,
+            autoRefreshToken: true,
+            detectSessionInUrl: true,
+          },
+        });
+      } catch (e) {
+        console.warn("Shelfmade: Supabase createClient failed", e);
+        return null;
+      }
     }
 
     function getAuthRedirectUrl() {
@@ -2118,7 +2139,14 @@
     }
 
     function App() {
-      const sb = useMemo(() => createSb(), []);
+      const sb = useMemo(() => {
+        try {
+          return createSb();
+        } catch (e) {
+          console.warn("Shelfmade: init failed", e);
+          return null;
+        }
+      }, []);
       if (!sb) return (
         <div style={{ background:P.bg, minHeight:"100vh" }}>
           <ConfigScreen/>
