@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Shelfmade – Cozy Haunted Library</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -50,6 +50,128 @@
       0% { transform: translateX(-100%); }
       100% { transform: translateX(300%); }
     }
+
+    html { -webkit-text-size-adjust: 100%; }
+    #root { min-height: 100dvh; }
+    button, [role="button"] { -webkit-tap-highlight-color: rgba(242,230,217,0.12); touch-action: manipulation; }
+
+    .sm-page {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 36px 24px;
+    }
+
+    /* Gruppen-Detail kann breiter sein – max-width wird per Klasse ergänzt */
+    .sm-page.sm-page-groups-detail { max-width: 960px; }
+
+    .sm-profile-head {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 36px;
+    }
+
+    .sm-stack-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 18px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .sm-grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .sm-grid-3cols { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .sm-grid-2cols { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+
+    .sm-grid-groupbooks {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    .sm-groups-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    @media (max-width: 640px) {
+      .sm-page {
+        padding: 16px 14px calc(88px + env(safe-area-inset-bottom, 0px)) 14px;
+      }
+
+      .sm-profile-head {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+
+      .sm-grid-3cols {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .sm-grid-2cols {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 10px;
+      }
+
+      .sm-grid-groupbooks {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 12px;
+      }
+
+      /* Modals wie Bottom-Sheets – besser thumb-erreichbar */
+      .sm-modal-overlay {
+        align-items: flex-end !important;
+        justify-content: center !important;
+        padding: 0 !important;
+      }
+
+      .sm-modal-panel {
+        max-height: min(92dvh, 92vh) !important;
+        border-radius: 22px 22px 0 0 !important;
+        max-width: 100% !important;
+        width: 100% !important;
+        padding-bottom: max(28px, calc(24px + env(safe-area-inset-bottom))) !important;
+      }
+
+      .sm-profile-head h1 {
+        font-size: clamp(22px, 5.8vw, 28px);
+        word-break: break-word;
+      }
+
+      .sm-request-row {
+        flex-wrap: wrap !important;
+        gap: 8px !important;
+      }
+
+      .sm-invite-controls {
+        flex-direction: column !important;
+        align-items: stretch !important;
+      }
+
+      .sm-search-hit {
+        flex-direction: column !important;
+        align-items: stretch !important;
+      }
+    }
+
+    @media (max-width: 380px) {
+      .sm-grid-3cols {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
   </style>
 </head>
 <body>
@@ -88,6 +210,20 @@
       midnight:   { name: "Nacht",      accent: "#5A6B8A", card: "#4A5A7A" },
       forest:     { name: "Wald",       accent: "#5A7A5A", card: "#4A6B4A" },
     };
+
+    /** ≤640px: Tab-Leiste unten, kompakte Layouts */
+    function useMobileLayout() {
+      const mq = "(max-width: 640px)";
+      const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.matchMedia(mq).matches);
+      useEffect(() => {
+        const m = window.matchMedia(mq);
+        const handler = () => setIsMobile(m.matches);
+        m.addEventListener("change", handler);
+        setIsMobile(m.matches);
+        return () => m.removeEventListener("change", handler);
+      }, []);
+      return isMobile;
+    }
 
     /** Cover-URL aus Open-Library-Suchtreffer (covers.openlibrary.org) */
     function openLibraryCoverUrl(doc) {
@@ -186,8 +322,64 @@
       const mod = typeof supabase !== "undefined" ? supabase : globalThis.supabase;
       if (!mod?.createClient) return null;
       return mod.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-        auth: { persistSession: true, autoRefreshToken: true },
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: true,
+          flowType: "pkce",
+        },
       });
+    }
+
+    function getAuthRedirectUrl() {
+      if (typeof window === "undefined") return "";
+      try {
+        const href = window.location.href.split("#")[0];
+        const base = href.indexOf("?") >= 0 ? href.slice(0, href.indexOf("?")) : href;
+        if (window.location.protocol === "file:") return "";
+        return base;
+      } catch {
+        return "";
+      }
+    }
+
+    const COOKIE_CONSENT_KEY = "shelfmade_privacy_accept_v1";
+
+    /** Hinweis auf lokale Speicherung (Sessions, Einwilligung, Theme); keine Tracking-Werbecookies */
+    function CookieConsentBanner({ onAccept }) {
+      const [visible, setVisible] = useState(() => {
+        try { return localStorage.getItem(COOKIE_CONSENT_KEY) !== "yes"; }
+        catch { return true; }
+      });
+      if (!visible) return null;
+      const accept = () => {
+        try { localStorage.setItem(COOKIE_CONSENT_KEY, "yes"); } catch (_) {}
+        setVisible(false);
+        onAccept?.();
+      };
+      return (
+        <div role="dialog" aria-labelledby="cookie-title" aria-describedby="cookie-desc"
+          style={{
+            position:"fixed", bottom:0, left:0, right:0, zIndex:10050,
+            background:`${P.brickDark}f5`,
+            backdropFilter:"blur(12px)",
+            borderTop:`1px solid ${P.cream}20`,
+            padding:"16px max(18px, env(safe-area-inset-right)) max(24px, calc(14px + env(safe-area-inset-bottom))) max(18px, env(safe-area-inset-left))",
+            boxShadow:"0 -8px 40px rgba(0,0,0,0.35)",
+          }}>
+          <div style={{ maxWidth:860, margin:"0 auto" }}>
+            <h2 id="cookie-title" style={{ fontSize:16, fontWeight:700, color:P.cream, marginBottom:8 }}>Hinweise zu Daten &amp; Browser-Speicher</h2>
+            <p id="cookie-desc" style={{ fontSize:13, color:P.textMuted, lineHeight:1.55, marginBottom:14 }}>
+              Shelfmade nutzt <strong style={{ color:P.cream }}>Supabase zur Anmeldung</strong>; dabei werden Sitzungsdaten überwiegend im <strong style={{ color:P.cream }}>lokalen Speicher deines Browsers</strong> abgelegt (keine klassischen Tracking-Cookies dieser App).
+              Ebenso werden z.&nbsp;B. deine gewählte Farbe und diese Einwilligung lokal gespeichert.
+              Ohne diese Speicherung funktioniert die Anmeldung nicht zuverlässig. Mit Akzeptieren stimmst du dieser Verwendung zu.
+            </p>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:10, alignItems:"center", justifyContent:"flex-end" }}>
+              <Btn accent={P.goldLight} onClick={accept}>Verstanden &amp; fortfahren</Btn>
+            </div>
+          </div>
+        </div>
+      );
     }
 
     function initialsFrom(nameOrEmail) {
@@ -297,13 +489,13 @@
 
     function Modal({ onClose, title, children }) {
       return (
-        <div style={{
+        <div className="sm-modal-overlay" style={{
           position:"fixed", inset:0, background:P.overlay,
           display:"flex", alignItems:"center", justifyContent:"center",
           zIndex:1000, padding:"20px",
           backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)",
         }} onClick={onClose}>
-          <div style={{
+          <div className="sm-modal-panel" style={{
             background:P.surface, borderRadius:"20px", padding:"28px",
             maxWidth:"500px", width:"100%",
             border:`2px solid ${P.goldLight}30`,
@@ -322,13 +514,17 @@
       );
     }
 
-    function Toast({ message, accent }) {
+    function Toast({ message, accent, reserveBottom }) {
       return (
         <div style={{
-          position:"fixed", bottom:"28px", left:"50%", transform:"translateX(-50%)",
+          position:"fixed",
+          bottom: reserveBottom ? "calc(84px + env(safe-area-inset-bottom, 0px))" : "28px",
+          left:"50%", transform:"translateX(-50%)",
           background:accent||P.foliage, color:P.cream,
-          padding:"12px 24px", borderRadius:"14px",
+          padding:"12px max(14px, 4vw)", borderRadius:"14px",
           fontSize:"14px", fontWeight:600, zIndex:2000,
+          maxWidth:"min(calc(100vw - 24px), 420px)",
+          textAlign:"center",
           fontFamily:"'Crimson Pro',Georgia,serif",
           boxShadow:"0 8px 32px rgba(74,42,31,0.5)",
           display:"flex", alignItems:"center", gap:"8px",
@@ -352,20 +548,33 @@
       );
     }
 
-    function AuthScreen({ sb, onAuthed }) {
+    function AuthScreen({ sb, onAuthed, toast }) {
       const [mode, setMode] = useState("login");
       const [email, setEmail] = useState("");
       const [password, setPassword] = useState("");
       const [displayName, setDisplayName] = useState("");
       const [err, setErr] = useState("");
       const [busy, setBusy] = useState(false);
+      const [forgotSent, setForgotSent] = useState(false);
 
       const submit = async (e) => {
         e.preventDefault();
         setErr("");
         setBusy(true);
         try {
-          if (mode === "signup") {
+          if (mode === "forgot") {
+            const redir = getAuthRedirectUrl();
+            if (!redir || redir.startsWith("file:")) {
+              setErr('Passwort-Link braucht eine http(s)-URL. Seite über einen kleinen Server öffnen (z. B. „Live Server“) oder in Supabase die Site-URL auf deine Online-Adresse setzen.');
+              return;
+            }
+            const { error } = await sb.auth.resetPasswordForEmail(email.trim(), {
+              redirectTo: redir,
+            });
+            if (error) throw error;
+            setForgotSent(true);
+            toast?.("Falls diese E-Mail existiert, erhältst du einen Link zum Zurücksetzen.");
+          } else if (mode === "signup") {
             const { error } = await sb.auth.signUp({
               email, password,
               options: { data: { display_name: displayName.trim() || undefined } },
@@ -387,28 +596,106 @@
       const input = { width:"100%", padding:"12px 14px", borderRadius:"12px", border:`1.5px solid ${P.cream}20`,
         background:P.surfaceDark, fontSize:"15px", color:P.cream, fontFamily:"'Crimson Pro',Georgia,serif", marginBottom:"12px", outline:"none", boxSizing:"border-box" };
 
+      const titleForgot = forgotSent ? "E-Mail verschickt" : "Passwort zurücksetzen";
+      const subForgot = forgotSent
+        ? "Sieh auch im Spam nach. Nach dem Öffnen des Links kannst du ein neues Passwort vergeben."
+        : "Trage die E-Mail ein – du erhältst einen Link von Supabase (Passwort-Link).";
+
       return (
         <div style={{ maxWidth:400, margin:"48px auto", padding:24 }}>
           <div style={{ textAlign:"center", marginBottom:28 }}>
             <Ghost size={48} style={{ margin:"0 auto 12px" }}/>
             <h1 style={{ fontSize:26, color:P.cream }}>Shelfmade</h1>
-            <p style={{ fontSize:14, color:P.textMuted, marginTop:8 }}>{mode === "login" ? "Anmelden" : "Konto erstellen"}</p>
+            <p style={{ fontSize:14, color:P.textMuted, marginTop:8 }}>
+              {mode === "login" ? "Anmelden" : mode === "signup" ? "Konto erstellen" : titleForgot}
+            </p>
+            {mode === "forgot" && <p style={{ fontSize:12, color:P.textDim, marginTop:10, lineHeight:1.45 }}>{subForgot}</p>}
           </div>
+          {(mode !== "forgot" || !forgotSent) && (
           <form onSubmit={submit}>
             {mode === "signup" && (
               <input style={input} placeholder="Anzeigename (optional)" value={displayName} onChange={e=>setDisplayName(e.target.value)}/>
             )}
             <input style={input} type="email" required placeholder="E-Mail" autoComplete="email"
               value={email} onChange={e=>setEmail(e.target.value)}/>
-            <input style={input} type="password" required placeholder="Passwort" autoComplete={mode==="login"?"current-password":"new-password"}
-              value={password} onChange={e=>setPassword(e.target.value)}/>
+            {(mode === "login" || mode === "signup") && (
+              <input style={input} type="password" required placeholder="Passwort" autoComplete={mode==="login"?"current-password":"new-password"}
+                value={password} onChange={e=>setPassword(e.target.value)}/>
+            )}
+            {mode === "forgot" && !forgotSent && (
+              <p style={{ fontSize:12, color:P.textMuted, marginBottom:12 }}>
+                Unter <strong style={{color:P.textDim}}>Supabase → Authentication → URL Configuration</strong> müssen diese Adresse und evtl. Wildcards als erlaubte Redirect-URL eingetragen sein.
+              </p>
+            )}
             {err && <p style={{ color:"#e88", fontSize:13, marginBottom:12 }}>{err}</p>}
-            <Btn accent={P.goldLight} disabled={busy} style={{ width:"100%", justifyContent:"center" }}>{busy ? "…" : mode === "login" ? "Anmelden" : "Registrieren"}</Btn>
+            <Btn accent={P.goldLight} disabled={busy} style={{ width:"100%", justifyContent:"center" }}>
+              {busy ? "…" : mode === "forgot" ? "Link anfordern" : mode === "login" ? "Anmelden" : "Registrieren"}
+            </Btn>
           </form>
-          <button type="button" onClick={()=>{ setMode(mode==="login"?"signup":"login"); setErr(""); }}
+          )}
+          {(mode === "login" || mode === "signup") && (
+          <button type="button" onClick={()=>{ setMode(mode==="login"?"signup":"login"); setErr(""); setForgotSent(false); }}
             style={{ marginTop:16, background:"none", border:"none", color:P.goldLight, cursor:"pointer", width:"100%", fontFamily:"inherit", fontSize:14 }}>
             {mode === "login" ? "Noch kein Konto? Registrieren" : "Schon ein Konto? Anmelden"}
           </button>
+          )}
+          {mode === "login" && (
+          <button type="button" onClick={()=>{ setMode("forgot"); setErr(""); setForgotSent(false); }}
+            style={{ marginTop:10, background:"none", border:"none", color:P.textMuted, cursor:"pointer", width:"100%", fontFamily:"inherit", fontSize:13 }}>
+            Passwort vergessen?
+          </button>
+          )}
+          {(mode === "forgot") && (
+          <button type="button" onClick={()=>{ setMode("login"); setErr(""); setForgotSent(false); }}
+            style={{ marginTop:14, background:"none", border:"none", color:P.goldLight, cursor:"pointer", width:"100%", fontFamily:"inherit", fontSize:14 }}>
+            ← Zurück zur Anmeldung
+          </button>
+          )}
+        </div>
+      );
+    }
+
+    /** Nach Klick auf E-Mail-Link: neues Passwort setzen */}
+    function PasswordRecoveryScreen({ sb, onDone, toast }) {
+      const [pw, setPw] = useState("");
+      const [pw2, setPw2] = useState("");
+      const [err, setErr] = useState("");
+      const [busy, setBusy] = useState(false);
+      const inp = { width:"100%", padding:"12px 14px", borderRadius:"12px", border:`1.5px solid ${P.cream}20`,
+        background:P.surfaceDark, fontSize:"15px", color:P.cream, fontFamily:"'Crimson Pro',Georgia,serif", marginBottom:"12px", outline:"none", boxSizing:"border-box" };
+      const submit = async (e) => {
+        e.preventDefault();
+        setErr("");
+        if (!pw || pw.length < 6) { setErr("Passwort mindestens 6 Zeichen."); return; }
+        if (pw !== pw2) { setErr("Die Passwörter stimmen nicht überein."); return; }
+        setBusy(true);
+        try {
+          const { error } = await sb.auth.updateUser({ password: pw });
+          if (error) throw error;
+          toast?.("Neues Passwort gespeichert.");
+          await sb.auth.refreshSession();
+          onDone?.();
+        } catch (x) {
+          setErr(x.message || String(x));
+        } finally {
+          setBusy(false);
+        }
+      };
+      return (
+        <div style={{ maxWidth:400, margin:"48px auto", padding:24 }}>
+          <Ghost size={40} style={{ margin:"0 auto 16px" }}/>
+          <h1 style={{ fontSize:22, color:P.cream, marginBottom:8 }}>Neues Passwort</h1>
+          <p style={{ fontSize:13, color:P.textMuted, marginBottom:20, lineHeight:1.5 }}>
+            Gib ein neues Passwort ein (nach dem Reset-Link aus der E-Mail).
+          </p>
+          <form onSubmit={submit}>
+            <input style={inp} type="password" autoComplete="new-password" placeholder="Neues Passwort" value={pw} onChange={e=>setPw(e.target.value)}/>
+            <input style={inp} type="password" autoComplete="new-password" placeholder="Passwort wiederholen" value={pw2} onChange={e=>setPw2(e.target.value)}/>
+            {err && <p style={{ color:"#e88", fontSize:13, marginBottom:12 }}>{err}</p>}
+            <Btn accent={P.goldLight} disabled={busy} style={{ width:"100%", justifyContent:"center" }}>
+              {busy ? "Speichern…" : "Passwort speichern"}
+            </Btn>
+          </form>
         </div>
       );
     }
@@ -754,7 +1041,7 @@
               {searchErr && <p style={{ fontSize:13, color:"#e8a598", marginBottom:12 }}>{searchErr}</p>}
               <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
                 {results.map((b,i)=>(
-                  <div key={`${b.title}-${i}`} style={{
+                  <div key={`${b.title}-${i}`} className="sm-search-hit" style={{
                     display:"flex", alignItems:"center", justifyContent:"space-between", gap:12,
                     padding:"12px 14px", borderRadius:"14px", background:P.surfaceDark,
                     border:`1px solid ${P.cream}10`,
@@ -825,8 +1112,8 @@
       const ownCount = books.filter((b)=>!b.loanOut).length;
       const lentCount = books.filter((b)=>b.loanOut).length;
       return (
-        <div style={{ maxWidth:"860px", margin:"0 auto", padding:"36px 24px" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:"18px", marginBottom:"36px" }}>
+        <div className="sm-page">
+          <div className="sm-profile-head">
             <div style={{ position:"relative" }}>
               <Avatar initials={user.initials} size={64} accent={accent}/>
               <Ghost size={24} style={{ position:"absolute", top:-8, right:-10 }}/>
@@ -845,7 +1132,7 @@
                 <h2 style={{ fontSize:"20px", fontWeight:700, color:P.foliageLight }}>Gerade geliehen</h2>
                 <p style={{ fontSize:12, color:P.textMuted, marginTop:4 }}>Diese Exemplare liegen bei dir · markiert für dich und für Freund·innen an deinem Regal.</p>
               </div>
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:"14px", marginBottom:36 }}>
+              <div className="sm-grid sm-grid-3cols" style={{ marginBottom:36 }}>
                 {borrowedItems.map((row) => (
                   <BookCard
                     key={`br-${row.loanId}`}
@@ -860,7 +1147,7 @@
             </>
           )}
 
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"18px" }}>
+          <div className="sm-stack-title">
             <h2 style={{ fontSize:"20px", fontWeight:700, color:P.cream }}>Meine Bücher</h2>
             <Btn accent={accent} onClick={onOpenAdd}><Icon name="plus" size={14} color={P.brickDark}/> Hinzufügen</Btn>
           </div>
@@ -871,7 +1158,7 @@
               <p style={{ color:P.textDim }}>Dein Regal ist leer – füge dein erstes Buch hinzu.</p>
             </div>
           ) : (
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:"14px", marginBottom:"40px" }}>
+            <div className="sm-grid sm-grid-3cols" style={{ marginBottom:"40px" }}>
               {books.map((b)=>(
                 <BookCard
                   key={b.id}
@@ -977,7 +1264,7 @@
       });
 
       return (
-        <div style={{ maxWidth:"860px", margin:"0 auto", padding:"36px 24px" }}>
+        <div className="sm-page">
           <h1 style={{ fontSize:"28px", fontWeight:700, color:P.cream, marginBottom:"4px" }}>Freunde</h1>
           <p style={{ fontSize:"14px", color:P.textMuted, marginBottom:"24px" }}>{friends.length} Freunde</p>
 
@@ -989,7 +1276,7 @@
                 const uObj = profileToUser(p);
                 if (!uObj) return null;
                 return (
-                  <div key={row.id} style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 16px", borderRadius:"14px",
+                  <div key={row.id} className="sm-request-row" style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 16px", borderRadius:"14px",
                     background:P.surfaceDark, border:`1px solid ${P.cream}12`, marginBottom:8 }}>
                     <Avatar initials={uObj.initials} size={40} accent={accent}/>
                     <div style={{ flex:1 }}>
@@ -1038,10 +1325,10 @@
           {showAdd && (
             <Modal onClose={()=>setShowAdd(false)} title="Freunde finden">
               <p style={{ fontSize:13, color:P.textMuted, marginBottom:12 }}>Nutzername (exakt, z. B. <code style={{color:P.goldLight}}>reader_a1b2c3d4</code>)</p>
-              <div style={{ display:"flex", gap:8, marginBottom:16 }}>
+              <div className="sm-invite-controls" style={{ display:"flex", gap:8, marginBottom:16 }}>
                 <input value={inviteUser} onChange={e=>setInviteUser(e.target.value)}
                   placeholder="username"
-                  style={{ flex:1, padding:"10px 12px", borderRadius:12, border:`1px solid ${P.cream}20`, background:P.surfaceDark, color:P.cream, fontFamily:"inherit" }}/>
+                  style={{ flex:1, padding:"10px 12px", borderRadius:12, border:`1px solid ${P.cream}20`, background:P.surfaceDark, color:P.cream, fontFamily:"inherit", minWidth:0 }}/>
                 <Btn accent={accent} onClick={()=>{
                   const q = inviteUser.trim().toLowerCase();
                   const u = discoverRows.find(x => (x.username||"").toLowerCase() === q);
@@ -1081,7 +1368,7 @@
                 </div>
               </div>
               {loadingBooks ? <p style={{ color:P.textMuted }}>Lade Bücher…</p> : (
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:"12px" }}>
+              <div className="sm-grid sm-grid-2cols">
                 {theirBooks.map((b)=> (
                   <BookCard
                     key={b.id}
@@ -1312,7 +1599,8 @@
       };
 
       return (
-        <div style={{ maxWidth: detailGroup ? 960 : 860, margin:"0 auto", padding:"36px 24px", minHeight:"72vh", position:"relative" }}>
+        <div className={"sm-page" + (detailGroup ? " sm-page-groups-detail" : "")}
+          style={{ minHeight:"72vh", position:"relative" }}>
           {detailGroup ? (
             <>
               <button
@@ -1356,11 +1644,7 @@
                   {booksLoading ? (
                     <p style={{ color:P.textMuted, fontSize:15 }}>Lade Bücher…</p>
                   ) : (
-                    <div style={{
-                      display:"grid",
-                      gridTemplateColumns:"repeat(auto-fill, minmax(220px, 1fr))",
-                      gap:16,
-                    }}>
+                    <div className="sm-grid-groupbooks">
                       {mergedBooks.map((entry, i) => (
                         <GroupBookCard key={`${entry.title}-${i}`} entry={entry} accent={accent} cardBg={cardBg}/>
                       ))}
@@ -1374,7 +1658,7 @@
             </>
           ) : (
             <>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"24px", flexWrap:"wrap", gap:12 }}>
+              <div className="sm-groups-header">
                 <div>
                   <h1 style={{ fontSize:"28px", fontWeight:700, color:P.cream, marginBottom:"4px" }}>Gruppen</h1>
                   <p style={{ fontSize:"14px", color:P.textMuted }}>Gemeinsame Bibliothek – alle Bücher der Mitglieder, Besitz auf einen Blick.</p>
@@ -1390,7 +1674,7 @@
                   Noch keine Gruppe – lege eine an oder tritt einer bei, sobald es welche gibt.
                 </div>
               ) : (
-                <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:"14px" }}>
+                <div className="sm-grid sm-grid-2cols" style={{ gap:"14px" }}>
                   {groups.map((g) => (
                     <button
                       key={g.id}
@@ -1442,6 +1726,7 @@
     }
 
     function MainApp({ sb }) {
+      const isMobile = useMobileLayout();
       const [page, setPage] = useState("profile");
       const [themeKey, setThemeKey] = useState(() => localStorage.getItem("sm_theme") || "terracotta");
       useEffect(() => { localStorage.setItem("sm_theme", themeKey); }, [themeKey]);
@@ -1459,6 +1744,7 @@
       const [loadingApp, setLoadingApp] = useState(true);
       const [showAddBook, setShowAddBook] = useState(false);
       const [toastMsg, setToastMsg] = useState(null);
+      const [passwordRecovery, setPasswordRecovery] = useState(false);
 
       const toast = useCallback((msg) => {
         setToastMsg(msg); setTimeout(()=>setToastMsg(null), 3200);
@@ -1543,11 +1829,18 @@
         sb.auth.getSession().then(({ data: { session: s } }) => {
           setSession(s); if (!s) setLoadingApp(false);
         });
-        const { data: { subscription } } = sb.auth.onAuthStateChange((_e, s) => setSession(s));
+        const { data: { subscription } } = sb.auth.onAuthStateChange((event, s) => {
+          setSession(s);
+          if (event === "PASSWORD_RECOVERY") setPasswordRecovery(true);
+        });
         return () => subscription.unsubscribe();
       }, [sb]);
 
       useEffect(() => {
+        if (passwordRecovery && session?.user?.id) {
+          setLoadingApp(false);
+          return;
+        }
         if (session?.user?.id) {
           setLoadingApp(true);
           loadAll(session.user.id);
@@ -1562,8 +1855,9 @@
           setIncoming([]);
           setOutgoing([]);
           setLoadingApp(false);
+          setPasswordRecovery(false);
         }
-      }, [session?.user?.id, loadAll]);
+      }, [session?.user?.id, loadAll, passwordRecovery]);
 
       const userObj = profileToUser(profile);
       const friendCount = friends.length;
@@ -1616,7 +1910,33 @@
 
       if (!session) {
         if (loadingApp) return <div style={{ padding:40, textAlign:"center", color:P.cream }}>Lade…</div>;
-        return <AuthScreen sb={sb} onAuthed={()=>sb.auth.getSession().then(({ data:{ session:s } })=>setSession(s))}/>;
+        return (
+          <div style={{ fontFamily:"'Crimson Pro',Georgia,serif", background:P.bg, minHeight:"100vh" }}>
+            <AuthScreen
+              sb={sb}
+              toast={toast}
+              onAuthed={() => sb.auth.getSession().then(({ data: { session: s } }) => setSession(s))}
+            />
+            {toastMsg && <Toast message={toastMsg} accent={theme.accent} reserveBottom={false}/>}
+          </div>
+        );
+      }
+
+      if (passwordRecovery) {
+        return (
+          <div style={{ fontFamily:"'Crimson Pro',Georgia,serif", background:P.bg, minHeight:"100vh" }}>
+            <PasswordRecoveryScreen
+              sb={sb}
+              toast={toast}
+              onDone={() => {
+                setPasswordRecovery(false);
+                setLoadingApp(true);
+                loadAll(session.user.id);
+              }}
+            />
+            {toastMsg && <Toast message={toastMsg} accent={theme.accent} reserveBottom={false}/>}
+          </div>
+        );
       }
 
       if (loadingApp || !userObj) {
@@ -1631,22 +1951,32 @@
 
       return (
         <div style={{ fontFamily:"'Crimson Pro',Georgia,serif", background:P.bg, color:P.cream, minHeight:"100vh", position:"relative" }}>
+          {!isMobile && (
+            <>
           <div style={{ position:"fixed", top:60, left:0, zIndex:0, opacity:0.4, pointerEvents:"none" }}><Vine side="left" height={200}/></div>
           <div style={{ position:"fixed", top:100, right:0, zIndex:0, opacity:0.4, pointerEvents:"none" }}><Vine side="right" height={160}/></div>
           <div style={{ position:"fixed", bottom:0, left:10, zIndex:0, opacity:0.3, pointerEvents:"none" }}><Vine side="left" height={140}/></div>
+            </>
+          )}
 
           <nav style={{
             display:"flex", alignItems:"center", justifyContent:"space-between",
-            padding:"0 28px", height:"56px",
+            gap:isMobile ? 8 : undefined,
+            padding:isMobile ? "8px max(14px, env(safe-area-inset-right)) 8px max(14px, env(safe-area-inset-left))"
+              : "0 28px",
+            paddingTop:isMobile ? "max(8px, env(safe-area-inset-top))" : undefined,
+            minHeight:isMobile ? "48px" : "56px",
+            boxSizing:"border-box",
             background:`${P.surface}E8`, backdropFilter:"blur(16px)", WebkitBackdropFilter:"blur(16px)",
             borderBottom:`1px solid ${P.cream}10`,
             position:"sticky", top:0, zIndex:100,
           }}>
-            <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
-              <Ghost size={26}/>
-              <span style={{ fontSize:"18px", fontWeight:800, color:P.cream, letterSpacing:"-0.3px" }}>Shelfmade</span>
+            <div style={{ display:"flex", alignItems:"center", gap:"8px", flexShrink:0, minWidth:0 }}>
+              <Ghost size={isMobile ? 22 : 26}/>
+              <span style={{ fontSize:isMobile ? "16px" : "18px", fontWeight:800, color:P.cream, letterSpacing:"-0.3px" }}>Shelfmade</span>
             </div>
-            <div style={{ display:"flex", gap:"2px" }}>
+            {!isMobile && (
+            <div style={{ display:"flex", gap:"2px", flex:1, justifyContent:"center", flexWrap:"wrap" }}>
               {navItems.map(n=>(
                 <button key={n.id} type="button" onClick={()=>setPage(n.id)} style={{
                   padding:"7px 16px", borderRadius:"10px",
@@ -1661,9 +1991,11 @@
                 </button>
               ))}
             </div>
-            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-              <button type="button" onClick={signOut} style={{ background:"none", border:"none", color:P.textMuted, cursor:"pointer", fontSize:12, fontFamily:"inherit" }}>Abmelden</button>
-              <Avatar initials={userObj.initials} size={32} accent={theme.accent}/>
+            )}
+            <div style={{ display:"flex", alignItems:"center", gap:isMobile ? 6 : 10, flexShrink:0 }}>
+              <button type="button" onClick={signOut} style={{ background:"none", border:"none", color:P.textMuted, cursor:"pointer",
+                fontSize:isMobile ? 11 : 12, fontFamily:"inherit", whiteSpace:"nowrap" }}>Abmelden</button>
+              <Avatar initials={userObj.initials} size={isMobile ? 28 : 32} accent={theme.accent}/>
             </div>
           </nav>
 
@@ -1725,11 +2057,62 @@
               }}
             />
           )}
-          {toastMsg && <Toast message={toastMsg} accent={theme.accent}/>}
+          {toastMsg && <Toast message={toastMsg} accent={theme.accent} reserveBottom={isMobile}/>}
 
+          {!isMobile && (
           <div style={{ position:"fixed", bottom:12, right:16, zIndex:50, opacity:0.6, pointerEvents:"none", animation:"ghostFloat 3s ease-in-out infinite" }}>
             <Ghost size={36}/>
           </div>
+          )}
+
+          {isMobile && (
+            <nav aria-label="Hauptnavigation"
+              style={{
+                position:"fixed",
+                bottom:0,
+                left:0,
+                right:0,
+                zIndex:250,
+                display:"flex",
+                justifyContent:"space-around",
+                alignItems:"stretch",
+                gap:4,
+                paddingBottom:"max(10px, env(safe-area-inset-bottom))",
+                paddingTop:"8px",
+                paddingLeft:"max(6px, env(safe-area-inset-left))",
+                paddingRight:"max(6px, env(safe-area-inset-right))",
+                background:`${P.surface}F2`,
+                backdropFilter:"blur(18px)",
+                WebkitBackdropFilter:"blur(18px)",
+                borderTop:`1px solid ${P.cream}14`,
+                boxShadow:"0 -6px 32px rgba(0,0,0,0.2)",
+              }}>
+              {navItems.map((n)=>(
+                <button key={n.id} type="button" aria-current={page===n.id ? "page" : undefined}
+                  onClick={()=>setPage(n.id)}
+                  style={{
+                    flex:1,
+                    display:"flex",
+                    flexDirection:"column",
+                    alignItems:"center",
+                    justifyContent:"center",
+                    gap:3,
+                    padding:"6px 2px",
+                    borderRadius:"12px",
+                    border:"none",
+                    cursor:"pointer",
+                    fontFamily:"'Crimson Pro',Georgia,serif",
+                    background:page===n.id ? `${P.cream}14` : "transparent",
+                    color:page===n.id ? P.cream : P.textMuted,
+                    fontWeight:page===n.id ? 700 : 500,
+                    fontSize:10,
+                  }}>
+                  <Icon name={n.icon} size={20} color={page===n.id ? P.cream : P.textMuted}/>
+                  <span style={{ letterSpacing:n.label.length > 8 ? "-0.2px" : 0 }}>{n.label}</span>
+                </button>
+              ))}
+            </nav>
+          )}
         </div>
       );
     }
@@ -1739,9 +2122,15 @@
       if (!sb) return (
         <div style={{ background:P.bg, minHeight:"100vh" }}>
           <ConfigScreen/>
+          <CookieConsentBanner/>
         </div>
       );
-      return <MainApp sb={sb}/>;
+      return (
+        <>
+          <MainApp sb={sb}/>
+          <CookieConsentBanner/>
+        </>
+      );
     }
 
     const root = ReactDOM.createRoot(document.getElementById("root"));
