@@ -175,7 +175,7 @@
   </style>
 </head>
 <body>
-  <div id="root"></div>
+  <div id="root"><div id="sm-static-boot" style="min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:24px;font-family:'Crimson Pro',Georgia,serif;color:#F2E6D9;background:#6B7D6B;text-align:center;box-sizing:border-box">Shelfmade lädt …</div></div>
 
   <!-- Supabase UMD: createClient unter globalem Namespace `supabase` -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.8/dist/umd/supabase.min.js"></script>
@@ -184,11 +184,55 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 
   <script type="text/babel">
-    const { useState, useEffect, useCallback, useMemo, useRef } = React;
+    const { useState, useEffect, useCallback, useMemo, useRef, Component } = React;
 
     /* ─── Supabase Projekt-Einstellungen (Project Settings → API) ─── */
     const SUPABASE_URL = "https://xzwbyjpmijhusrnskmmv.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh6d2J5anBtaWpodXNybnNrbW12Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0MDA0NTksImV4cCI6MjA5Mzk3NjQ1OX0.Eylt9aXTqCUWsLy6YfI5PXzFGfc1gY4cjf82yJR3IXw";
+
+    /** Nimmt nur den öffentlichen anon-Key — service_role würde Clients unsicher machen */
+    function readJwtRole(jwt) {
+      if (!jwt || typeof jwt !== "string") return null;
+      const parts = jwt.split(".");
+      if (parts.length < 2) return null;
+      try {
+        const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+        const pad = b64.length % 4 ? "=".repeat(4 - (b64.length % 4)) : "";
+        const json = atob(b64 + pad);
+        const payload = JSON.parse(json);
+        return payload.role || null;
+      } catch {
+        return null;
+      }
+    }
+
+    function validateSupabaseProjectConfig() {
+      const issues = [];
+      const raw = (SUPABASE_URL || "").trim().replace(/\/+$/, "");
+      if (!raw.startsWith("https://")) {
+        issues.push("SUPABASE_URL muss mit https:// beginnen (Vercel und Supabase Auth).");
+      } else {
+        try {
+          const host = new URL(raw).hostname;
+          if (!/\.supabase\.co$/i.test(host)) {
+            issues.push("SUPABASE_URL sollte auf *.supabase.co zeigen (Project Settings → API), es sei denn du nutzt eine ausdrücklich erlaubte Proxy-URL.");
+          }
+        } catch {
+          issues.push("SUPABASE_URL ist keine gültige https-URL.");
+        }
+      }
+      if (!SUPABASE_ANON_KEY || SUPABASE_ANON_KEY.length < 20) {
+        issues.push("SUPABASE_ANON_KEY fehlt oder ist zu kurz.");
+      } else {
+        const role = readJwtRole(SUPABASE_ANON_KEY);
+        if (role === "service_role") {
+          issues.push('Im Key steht die Rolle „service_role“. Verwende nur den „anon“-Key (Publishable) aus dem Supabase-Dashboard — niemals den Service-Role-Key in der Web-App.');
+        } else if (role && role !== "anon") {
+          issues.push('Unerwartete JWT-Rolle („' + role + '„). Für Browser-Clients ist normalerweise „anon“ erforderlich.');
+        }
+      }
+      return issues;
+    }
 
     const P = {
       bg: "#6B7D6B", surface: "#A0523C", surfaceLight: "#B8654E", surfaceDark: "#8B4533",
@@ -335,11 +379,12 @@
     }
 
     function createSb() {
+      if (validateSupabaseProjectConfig().length) return null;
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
       const mod = typeof supabase !== "undefined" ? supabase : globalThis.supabase;
       if (!mod?.createClient) return null;
       try {
-        return mod.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        return mod.createClient(SUPABASE_URL, SUPABASE_ANON_KEY.trim(), {
           auth: {
             persistSession: true,
             autoRefreshToken: true,
@@ -349,6 +394,54 @@
       } catch (e) {
         console.warn("Shelfmade: Supabase createClient failed", e);
         return null;
+      }
+    }
+
+    /** Fängt Render-Fehler (z. B. nach Deploy/Edge-Cases) — nie leerer Screen */
+    class ErrorBoundary extends Component {
+      constructor(props) {
+        super(props);
+        this.state = { err: null, info: "" };
+      }
+      static getDerivedStateFromError(err) {
+        return { err };
+      }
+      componentDidCatch(err, info) {
+        console.error("[Shelfmade] React ErrorBoundary", err, info);
+        this.setState({ info: (info && info.componentStack) ? String(info.componentStack) : "" });
+      }
+      render() {
+        const { err } = this.state;
+        if (!err) return this.props.children;
+        const msg = err && err.message ? err.message : String(err);
+        return (
+          <div style={{
+            fontFamily:"'Crimson Pro',Georgia,serif",
+            minHeight:"100vh", background:P.bg, color:P.cream,
+            padding:"32px max(24px, 4vw)", boxSizing:"border-box",
+          }}>
+            <Ghost size={48} style={{ marginBottom:16 }}/>
+            <h1 style={{ fontSize:22, marginBottom:12 }}>Etwas ist schiefgelaufen</h1>
+            <p style={{ color:P.textMuted, lineHeight:1.6, marginBottom:16, maxWidth:560 }}>
+              Die Oberfläche ist abgestürzt. Ein Reload hilft oft – besonders nach einem Deploy. Unten steht die technische Meldung.
+            </p>
+            <div style={{
+              padding:14, borderRadius:14, background:P.surfaceDark, border:`1px solid ${P.cream}15`,
+              fontSize:13, color:"#ebb", wordBreak:"break-word", marginBottom:20,
+            }}>{msg}</div>
+            {this.state.info ? (
+              <pre style={{
+                fontSize:11, color:P.textDim, overflow:"auto", maxHeight:180,
+                background:`${P.brickDark}`, padding:12, borderRadius:12,
+              }}>{this.state.info}</pre>
+            ) : null}
+            <button type="button" onClick={()=>window.location.reload()} style={{
+              marginTop:22, padding:"12px 22px", borderRadius:12,
+              border:"none", cursor:"pointer", fontFamily:"inherit", fontWeight:700,
+              background:P.goldLight, color:P.brickDark,
+            }}>Seite neu laden</button>
+          </div>
+        );
       }
     }
 
@@ -488,12 +581,12 @@
       );
     }
 
-    function Btn({ children, variant="primary", accent, onClick, style:s, small, disabled }) {
+    function Btn({ children, variant="primary", accent, onClick, style:s, small, disabled, type = "button" }) {
       const [h, setH] = useState(false);
       const bg = variant==="primary" ? (accent||P.goldLight) : variant==="secondary" ? `${P.cream}15` : "transparent";
       const clr = variant==="primary" ? P.brickDark : P.cream;
       return (
-        <button disabled={disabled} style={{
+        <button type={type} disabled={disabled} style={{
           padding: small?"6px 14px":"10px 20px", borderRadius:"12px",
           fontSize: small?"13px":"14px", fontWeight:600,
           fontFamily:"'Crimson Pro',Georgia,serif",
@@ -556,14 +649,35 @@
       );
     }
 
-    function ConfigScreen() {
+    function ConfigScreen({ validationMessages = [], supabaseSdkMissing }) {
       return (
-        <div style={{ maxWidth:520, margin:"48px auto", padding:24, textAlign:"center", color:P.cream }}>
+        <div style={{ maxWidth:560, margin:"48px auto", padding:24, textAlign:"center", color:P.cream }}>
           <Ghost size={56} style={{ margin:"0 auto 16px" }}/>
           <h1 style={{ fontSize:26, marginBottom:12 }}>Supabase einrichten</h1>
+          {(validationMessages.length > 0 || supabaseSdkMissing) && (
+            <div style={{
+              marginBottom:20, padding:14, borderRadius:14,
+              border:`1px solid ${"#e8847a"}60`,
+              background:`${P.surfaceDark}`,
+              fontSize:14, color:P.cream, lineHeight:1.55,
+              whiteSpace:"pre-wrap", overflowWrap:"anywhere",
+            }}>
+              {supabaseSdkMissing ? (
+                <p style={{ marginBottom:validationMessages.length?12:0 }}>
+                  Das Supabase-Javascript konnte nicht vom CDN geladen werden (Extensions, Netzwerk, oder Adblock).
+                  Öffne die Browser-Konsole unter „Network“ und prüfe <code>@supabase/supabase-js</code>.
+                </p>
+              ) : null}
+              {validationMessages.map((t, i) => (
+                <p key={i} style={{ margin:i ? "10px 0 0" : 0, textAlign:"left" }}>• {t}</p>
+              ))}
+            </div>
+          )}
           <p style={{ color:P.textMuted, lineHeight:1.6, marginBottom:20 }}>
-            Trage in <code style={{ color:P.goldLight }}>Shelfmade.html</code> oben im Script <code style={{ color:P.goldLight }}>SUPABASE_URL</code> und{" "}
-            <code style={{ color:P.goldLight }}>SUPABASE_ANON_KEY</code> ein (Project Settings → API). Führe danach <code style={{ color:P.goldLight }}>supabase/schema.sql</code> im SQL Editor aus.
+            Trage in <code style={{ color:P.goldLight }}>index.html</code> oben im Script <code style={{ color:P.goldLight }}>SUPABASE_URL</code> und{" "}
+            <code style={{ color:P.goldLight }}>SUPABASE_ANON_KEY</code> ein (Publishable anon key, nie service_role).
+            Für Vercel: dieselbe Produktions-URL unter Supabase Authentication → Redirect URLs eintragen. Führe{" "}
+            <code style={{ color:P.goldLight }}>supabase/schema.sql</code> im SQL Editor aus.
           </p>
         </div>
       );
@@ -1746,6 +1860,51 @@
       );
     }
 
+    /** Sitzung besteht, Regal-/Profil-Laden oder Schema blockiert den Rest */
+    function SessionDataBlockedLayer({ accent, title, hint, tech, detail, sessionEmail, onRetry, onSignOut }) {
+      return (
+        <div style={{ fontFamily:"'Crimson Pro',Georgia,serif", background:P.bg, minHeight:"100vh",
+          padding:"28px max(18px, 4vw)", boxSizing:"border-box", display:"flex", alignItems:"center", justifyContent:"center",
+        }}>
+          <div style={{ maxWidth:480, padding:28, borderRadius:20,
+            border:`2px solid ${P.goldLight}35`,
+            background:`${P.surface}f0`,
+            boxShadow:"0 16px 48px rgba(0,0,0,0.25)",
+          }}>
+            <Ghost size={40} style={{ marginBottom:14 }}/>
+            <h2 style={{ color:P.cream, marginBottom:10, fontSize:20 }}>{title}</h2>
+            <p style={{ fontSize:14, color:P.textMuted, marginBottom:10, lineHeight:1.6 }}>{hint}</p>
+            {sessionEmail ? <p style={{ fontSize:12, color:P.textDim, marginBottom:12 }}>Konto (E-Mail): <strong style={{ color:P.goldLight }}>{sessionEmail}</strong></p> : null}
+            {tech ? (
+              <p style={{
+                padding:11, marginBottom:12, borderRadius:12,
+                background:P.brickDark, fontSize:12,
+                overflowWrap:"anywhere", wordBreak:"break-word",
+                whiteSpace:"pre-wrap", border:`1px solid ${"#e8847a"}40`, color:P.cream,
+              }}>{tech}</p>
+            ) : null}
+            {detail ? <p style={{ fontSize:11, color:P.textDim, lineHeight:1.55, marginBottom:16 }}>{detail}</p> : null}
+            <div style={{ display:"flex", flexWrap:"wrap", gap:10 }}>
+              <Btn accent={accent || P.goldLight} onClick={onRetry}>Erneut versuchen</Btn>
+              <Btn variant="secondary" onClick={onSignOut}>Abmelden</Btn>
+              <Btn variant="secondary" onClick={()=>window.location.reload()}>Seite neu laden</Btn>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function ShellLoadingOverlay({ subtitle }) {
+      return (
+        <div style={{ padding:44, textAlign:"center", color:P.cream, fontFamily:"'Crimson Pro',Georgia,serif",
+          fontSize:"16px",
+        }}>
+          <Ghost size={44} style={{ margin:"0 auto 16px", animation:"ghostFloat 2.4s ease-in-out infinite", display:"block" }}/>
+          {subtitle || "Lade Daten…"}
+        </div>
+      );
+    }
+
     function MainApp({ sb }) {
       const isMobile = useMobileLayout();
       const [page, setPage] = useState("profile");
@@ -1766,6 +1925,9 @@
       const [showAddBook, setShowAddBook] = useState(false);
       const [toastMsg, setToastMsg] = useState(null);
       const [passwordRecovery, setPasswordRecovery] = useState(false);
+      const [authInitError, setAuthInitError] = useState(null);
+      const [dataGateBlocked, setDataGateBlocked] = useState(null);
+      const [authSessionHydrated, setAuthSessionHydrated] = useState(false);
 
       const toast = useCallback((msg) => {
         setToastMsg(msg); setTimeout(()=>setToastMsg(null), 3200);
@@ -1773,18 +1935,35 @@
 
       const loadAll = useCallback(async (sid) => {
         if (!sid) return;
+        setDataGateBlocked(null);
         try {
           const { data: prof, error: pe } = await sb.from("profiles").select("*").eq("id", sid).maybeSingle();
-          if (pe) { toast(pe.message); return; }
+          if (pe) {
+            toast(pe.message);
+            setProfile(null);
+            setBooks([]); setBorrowedItems([]);
+            setDataGateBlocked({ kind:"profile_query", hint:"Profil konnte nicht geladen werden (Supabase-/RLS-Fehler).", tech: pe.message });
+            return;
+          }
           if (!prof) {
-            toast("Kein Profil gefunden. In Supabase SQL Editor supabase/schema.sql ausführen und neu registrieren.");
+            toast("Kein Profil gefunden. Supabase-SQL (Trigger/„profiles“-Zeile) prüfen und neu registrieren.");
+            setProfile(null);
+            setBooks([]);
+            setBorrowedItems([]);
+            setFriends([]); setDiscover([]); setFriendships([]); setIncoming([]); setOutgoing([]);
+            setDataGateBlocked({
+              kind:"missing_profile",
+              hint:"Zu deinem angemeldeten Konto gibt es keine Zeile in der Tabelle profiles. Neue Accounts brauchen den Trigger aus supabase/schema.sql; bestehende ggf. dort einmal Nachziehen.",
+              tech:null,
+            });
             return;
           }
           setProfile(prof);
 
           const { data: myBooks, error: be } = await sb.from("books").select("*").eq("user_id", sid).order("created_at", { ascending: false });
-          if (be) toast(be.message);
-          else {
+          if (be) {
+            toast(be.message);
+          } else {
             const { data: asLender } = await sb.from("book_loans").select("*").eq("lender_id", sid).eq("status", "active");
             const borrowerIds = [...new Set((asLender||[]).map((x)=>x.borrower_id))];
             const { data: bprofsL } = borrowerIds.length ? await sb.from("profiles").select("*").in("id", borrowerIds) : { data: [] };
@@ -1841,21 +2020,63 @@
 
           const { data: allP } = await sb.from("profiles").select("*").neq("id", sid);
           setDiscover(allP||[]);
+        } catch (fatal) {
+          console.error("[Shelfmade] loadAll", fatal);
+          const m = fatal && fatal.message ? fatal.message : String(fatal);
+          setProfile(null);
+          setBooks([]); setBorrowedItems([]);
+          setDataGateBlocked({ kind:"exception", hint:"Beim Laden deines Regals trat ein Fehler auf.", tech: m });
         } finally {
           setLoadingApp(false);
         }
       }, [sb, toast]);
 
       useEffect(() => {
-        sb.auth.getSession().then(({ data: { session: s } }) => {
-          setSession(s); if (!s) setLoadingApp(false);
-        });
-        const { data: { subscription } } = sb.auth.onAuthStateChange((event, s) => {
-          setSession(s);
-          if (event === "PASSWORD_RECOVERY") setPasswordRecovery(true);
-        });
-        return () => subscription.unsubscribe();
+        let unsub = () => {};
+        (async () => {
+          try {
+            const resp = await sb.auth.getSession();
+            const sess = resp && resp.data ? resp.data.session : null;
+            const errObj = resp && resp.error ? resp.error : null;
+            if (errObj) {
+              console.warn("[Shelfmade] getSession:", errObj);
+              setAuthInitError(errObj.message || "Die Sitzung konnte nicht gelesen werden.");
+              setSession(null);
+              setLoadingApp(false);
+            } else {
+              setSession(sess);
+              if (!sess) setLoadingApp(false);
+            }
+          } catch (e) {
+            console.warn("[Shelfmade] getSession threw", e);
+            setAuthInitError(e.message || String(e));
+            setSession(null);
+            setLoadingApp(false);
+          }
+
+          try {
+            const {
+              data: { subscription },
+            } = sb.auth.onAuthStateChange((event, s) => {
+              setAuthInitError(null);
+              setSession(s);
+              if (event === "PASSWORD_RECOVERY") setPasswordRecovery(true);
+            });
+            unsub = () => subscription.unsubscribe();
+          } catch (subErr) {
+            console.warn("[Shelfmade] onAuthStateChange", subErr);
+            setAuthInitError((prev) => prev || (subErr.message || String(subErr)));
+          }
+          setAuthSessionHydrated(true);
+        })();
+        return () => unsub();
       }, [sb]);
+
+      useEffect(() => {
+        if (!session?.user?.id) {
+          setDataGateBlocked(null);
+        }
+      }, [session?.user?.id]);
 
       useEffect(() => {
         if (passwordRecovery && session?.user?.id) {
@@ -1927,16 +2148,47 @@
         else { setBooks(prev=>prev.filter(x=>x.id!==id)); toast("Buch entfernt"); }
       };
 
-      const signOut = async () => { await sb.auth.signOut(); setPage("profile"); };
+      const signOut = async () => {
+        try {
+          await sb.auth.signOut();
+          setPage("profile");
+          setDataGateBlocked(null);
+        } catch (e) {
+          toast(e.message || String(e));
+        }
+      };
 
       if (!session) {
-        if (loadingApp) return <div style={{ padding:40, textAlign:"center", color:P.cream }}>Lade…</div>;
+        if (!authSessionHydrated) {
+          return <ShellLoadingOverlay subtitle="Sitzung wird geprüft…"/>;
+        }
         return (
           <div style={{ fontFamily:"'Crimson Pro',Georgia,serif", background:P.bg, minHeight:"100vh" }}>
+            {authInitError ? (
+              <div style={{
+                padding:18, margin:"max(24px, 4vw)",
+                marginBottom:0,
+                borderRadius:"16px",
+                border:`2px solid ${"#e8847a"}70`,
+                background:P.surfaceDark,
+                color:P.cream,
+                fontSize:14,
+                lineHeight:1.55,
+                whiteSpace:"pre-wrap",
+              }}>
+                <strong style={{ color:"#faa" }}>Anmeldungs-Speicher konnte nicht geladen werden.</strong><br/>
+                Du kannst trotzdem versuchen, dich anzumelden. Technische Meldung: {authInitError}
+              </div>
+            ) : null}
             <AuthScreen
               sb={sb}
               toast={toast}
-              onAuthed={() => sb.auth.getSession().then(({ data: { session: s } }) => setSession(s))}
+              onAuthed={() =>
+                sb.auth.getSession().then(({ data: { session: next } }) => {
+                  setAuthInitError(null);
+                  setSession(next);
+                }).catch(() => {})
+              }
             />
             {toastMsg && <Toast message={toastMsg} accent={theme.accent} reserveBottom={false}/>}
           </div>
@@ -1960,8 +2212,37 @@
         );
       }
 
+      if (session?.user?.id && !loadingApp && !profile && !passwordRecovery) {
+        const g = dataGateBlocked || {};
+        let title = "Regal konnte nicht geladen werden";
+        if (g.kind === "missing_profile") title = "Kein Nutzerprofil in der Datenbank";
+        else if (g.kind === "profile_query") title = "Profilabfrage fehlgeschlagen";
+        else if (g.kind === "exception") title = "Unerwarteter Fehler beim Laden";
+        else title = "Regal konnte nicht angezeigt werden";
+        const hintText = g.hint ||
+          "Nach dem Laden fehlen Profil-/Regaldaten für dein Supabase‑Konto. Bitte Datenbank‑Schema oder Rechte prüfen, neu laden oder abmelden.";
+        return (
+          <SessionDataBlockedLayer
+            accent={theme.accent}
+            title={title}
+            hint={hintText}
+            tech={g.tech || null}
+            sessionEmail={(session.user && session.user.email) || ""}
+            onRetry={() => { setLoadingApp(true); loadAll(session.user.id); }}
+            onSignOut={() => signOut()}
+            detail={
+              "Wenn dies nach einem neuen Deploy passiert ist: bestehende User bleiben in auth.users — prüfe, ob migrations/schema das Profil anlegt oder ob der anon‑Key weiterhin passt."}
+          />
+        );
+      }
+
       if (loadingApp || !userObj) {
-        return <div style={{ padding:40, textAlign:"center", color:P.cream }}>Lade Regal…</div>;
+        return (
+          <div style={{ background:P.bg, minHeight:"100vh", fontFamily:"'Crimson Pro',Georgia,serif", color:P.cream }}>
+            <ShellLoadingOverlay subtitle={"Regal und Freundeslisten werden geladen…"}/>
+            {toastMsg && <Toast message={toastMsg} accent={theme.accent} reserveBottom={isMobile}/>}
+          </div>
+        );
       }
 
       const navItems = [
@@ -2139,6 +2420,17 @@
     }
 
     function App() {
+      const sdkMissing = useMemo(() => {
+        try {
+          const mod = typeof supabase !== "undefined" ? supabase : globalThis.supabase;
+          return !mod?.createClient;
+        } catch (_) {
+          return true;
+        }
+      }, []);
+
+      const validationMessages = useMemo(() => validateSupabaseProjectConfig(), []);
+
       const sb = useMemo(() => {
         try {
           return createSb();
@@ -2147,9 +2439,10 @@
           return null;
         }
       }, []);
+
       if (!sb) return (
         <div style={{ background:P.bg, minHeight:"100vh" }}>
-          <ConfigScreen/>
+          <ConfigScreen validationMessages={validationMessages} supabaseSdkMissing={sdkMissing}/>
           <CookieConsentBanner/>
         </div>
       );
@@ -2161,8 +2454,38 @@
       );
     }
 
-    const root = ReactDOM.createRoot(document.getElementById("root"));
-    root.render(<App/>);
+    (function bootstrapShelfmade() {
+      try {
+        const container = document.getElementById("root");
+        if (!container) {
+          document.body.insertAdjacentHTML("beforeend",
+            "<p style=\"padding:24px;color:#F2E6D9\">Shelfmade: #root fehlt — index.html musste einmalig deployt werden.</p>");
+          return;
+        }
+        if (!window.React || !window.ReactDOM) {
+          container.innerHTML = "<div style=\"min-height:100vh;display:flex;align-items:center;justify-content:center;color:#f2e6d9;padding:28px;text-align:center;font-family:Georgia,serif;line-height:1.55\">React konnte nicht vom CDN geladen werden. Netzwerk, Privat‑Modus oder Blockierer prüfen; danach Neu laden.</div>";
+          return;
+        }
+        if (!window.ReactDOM.createRoot) {
+          container.innerHTML = "<div style=\"min-height:100vh;display:flex;align-items:center;justify-content:center;color:#f2e6d9;padding:28px;text-align:center;font-family:Georgia,serif\">ReactDOM ohne createRoot — bitte React 18 UMD laden.</div>";
+          return;
+        }
+        window.ReactDOM.createRoot(container).render(<ErrorBoundary><App/></ErrorBoundary>);
+      } catch (bootErr) {
+        console.error("[Shelfmade] bootstrap", bootErr);
+        const box = document.getElementById("root");
+        const msg = bootErr && bootErr.message ? bootErr.message : String(bootErr);
+        const safe = msg.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+        const inner =
+          `<div style="min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:28px;box-sizing:border-box;background:#6B7D6B;color:#F2E6D9;font-family:'Crimson Pro',Georgia,serif;text-align:center">`+
+          `<h1 style="font-size:21px;margin:0 0 12px">Start fehlgeschlagen</h1>`+
+          `<p style="opacity:.92;line-height:1.55;margin:0 0 14px;max-width:480px">Beim ersten Start ist ein nicht abgefangener Fehler aufgetreten.</p>`+
+          `<pre style="text-align:left;font-size:12px;overflow:auto;width:100%;max-width:480px;background:#3a2922;padding:12px;border-radius:10px;line-height:1.4">${safe}</pre>`+
+          `<button type="button" onclick="location.reload()" style="margin-top:22px;padding:11px 20px;font-weight:700;border:none;border-radius:10px;background:#D4B05E;color:#4A2A1F;cursor:pointer;font-family:inherit">Neu laden</button></div>`;
+        if (box) box.innerHTML = inner;
+        else document.body.insertAdjacentHTML("beforeend", inner);
+      }
+    })();
   </script>
 </body>
 </html>
