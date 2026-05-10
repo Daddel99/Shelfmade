@@ -1,0 +1,1751 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shelfmade – Cozy Haunted Library</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #6B7D6B;
+      --surface: #A0523C;
+      --surface-light: #B8654E;
+      --surface-dark: #8B4533;
+      --brick: #6B3A2E;
+      --brick-dark: #4A2A1F;
+      --cream: #F2E6D9;
+      --cream-dark: #EDD8C8;
+      --ghost: #F5E8DC;
+      --ghost-pink: #F0D5C5;
+      --gold: #C4A24E;
+      --gold-light: #D4B05E;
+      --sage: #8A9A7E;
+      --sage-dark: #6B7D6B;
+      --foliage: #3E5C3E;
+      --foliage-light: #5A7A5A;
+      --text: #F2E6D9;
+      --text-muted: #D4B8A0;
+      --text-dim: #A08070;
+      --overlay: rgba(74,42,31,0.7);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Crimson Pro', Georgia, serif;
+      background: var(--bg);
+      color: var(--cream);
+      min-height: 100vh;
+    }
+    ::placeholder { color: var(--text-dim); }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--surface-dark); border-radius: 3px; }
+
+    @keyframes ghostFloat {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-6px); }
+    }
+    @keyframes scanMove {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(300%); }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- Supabase UMD: createClient unter globalem Namespace `supabase` -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.8/dist/umd/supabase.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useMemo, useRef } = React;
+
+    /* ─── Supabase Projekt-Einstellungen (Project Settings → API) ─── */
+    const SUPABASE_URL = "https://xzwbyjpmijhusrnskmmv.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh6d2J5anBtaWpodXNybnNrbW12Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0MDA0NTksImV4cCI6MjA5Mzk3NjQ1OX0.Eylt9aXTqCUWsLy6YfI5PXzFGfc1gY4cjf82yJR3IXw";
+
+    const P = {
+      bg: "#6B7D6B", surface: "#A0523C", surfaceLight: "#B8654E", surfaceDark: "#8B4533",
+      brick: "#6B3A2E", brickDark: "#4A2A1F",
+      cream: "#F2E6D9", creamDark: "#EDD8C8",
+      ghost: "#F5E8DC", ghostPink: "#F0D5C5",
+      gold: "#C4A24E", goldLight: "#D4B05E",
+      sage: "#8A9A7E", sageDark: "#6B7D6B",
+      foliage: "#3E5C3E", foliageLight: "#5A7A5A",
+      text: "#F2E6D9", textMuted: "#D4B8A0", textDim: "#A08070",
+      overlay: "rgba(74,42,31,0.7)",
+    };
+
+    const THEMES = {
+      terracotta: { name: "Terracotta", accent: "#B8654E", card: "#A0523C" },
+      sage:       { name: "Salbei",     accent: "#8A9A7E", card: "#6B7D6B" },
+      gold:       { name: "Gold",       accent: "#D4B05E", card: "#A0523C" },
+      plum:       { name: "Pflaume",    accent: "#8B6B7A", card: "#7A5A6A" },
+      midnight:   { name: "Nacht",      accent: "#5A6B8A", card: "#4A5A7A" },
+      forest:     { name: "Wald",       accent: "#5A7A5A", card: "#4A6B4A" },
+    };
+
+    /** Cover-URL aus Open-Library-Suchtreffer (covers.openlibrary.org) */
+    function openLibraryCoverUrl(doc) {
+      if (doc.cover_i)
+        return `https://covers.openlibrary.org/b/id/${doc.cover_i}-M.jpg`;
+      let raw = [];
+      if (Array.isArray(doc.isbn) && doc.isbn.length) raw = doc.isbn;
+      else {
+        if (doc.isbn_13) raw.push(doc.isbn_13);
+        if (doc.isbn_10) raw.push(doc.isbn_10);
+      }
+      if (raw.length) {
+        const clean = (s) => String(s).replace(/[^0-9Xx]/g, "");
+        const ten = raw.map(clean).find((x) => x.length === 10);
+        const thirteen = raw.map(clean).find((x) => x.length === 13);
+        const isbn = thirteen || ten;
+        if (isbn) return `https://covers.openlibrary.org/isbn/${isbn}-M.jpg`;
+      }
+      return null;
+    }
+
+    /** Einzelanfrage Open Library (limit anpassbar für Live-Vorschläge) */
+    async function searchOpenLibrary(query, limit = 18, signal) {
+      const q = query.trim();
+      if (!q) return [];
+      const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${limit}`;
+      const res = await fetch(url, signal ? { signal } : undefined);
+      if (!res.ok) throw new Error("Open Library antwortet nicht – später bitte erneut versuchen.");
+      const json = await res.json();
+      const out = [];
+      for (const doc of json.docs || []) {
+        const titleRaw = doc.title;
+        const title = Array.isArray(titleRaw) ? titleRaw[0] : titleRaw;
+        if (!title || typeof title !== "string") continue;
+        const author = (doc.author_name && doc.author_name[0]) || "Unbekannt";
+        let year = doc.first_publish_year;
+        if (year == null && Array.isArray(doc.publish_year) && doc.publish_year.length)
+          year = doc.publish_year[0];
+        if (year == null || typeof year !== "number") year = 0;
+        const link = doc.key ? `https://openlibrary.org${doc.key}` : null;
+        const cover_url = openLibraryCoverUrl(doc);
+        out.push({ title, author, year, link, cover_url });
+      }
+      return out;
+    }
+
+    /** Mehrere Suchvarianten (Tippfehler, Teilbegriffe, Umlaute) und Ergebnisse zusammenführen */
+    function buildSearchVariants(raw) {
+      const q = raw.trim();
+      if (!q) return [];
+      const variants = new Set([q]);
+      const parts = q.split(/\s+/).filter(Boolean);
+      if (parts.length >= 2) {
+        variants.add(parts[0]);
+        variants.add(parts[parts.length - 1]);
+        variants.add(parts.slice(0, 2).join(" "));
+      }
+      const first = parts[0] || q;
+      if (first.length >= 4) variants.add(first.slice(0, -1));
+      if (first.length >= 5) variants.add(first.slice(0, -2));
+      if (first.length >= 6) variants.add(first.slice(0, -3));
+      const relaxed = q
+        .replace(/ä/gi, "a").replace(/ö/gi, "o").replace(/ü/gi, "u")
+        .replace(/ß/g, "ss");
+      if (relaxed !== q) variants.add(relaxed);
+      return [...variants].filter(v => v.length >= 1).slice(0, 10);
+    }
+
+    function mergeUniqueBookLists(lists) {
+      const map = new Map();
+      for (const list of lists) {
+        for (const b of list) {
+          const k = `${b.title.toLowerCase()}|${b.author.toLowerCase()}`;
+          const ex = map.get(k);
+          if (!ex) map.set(k, b);
+          else if (!ex.cover_url && b.cover_url) map.set(k, b);
+        }
+      }
+      return [...map.values()];
+    }
+
+    /** „Suchen“-Button: mehrere Varianten parallel (Toleranz bei Tippfehlern) */
+    async function searchOpenLibrarySmart(query) {
+      const base = query.trim();
+      if (!base) return [];
+      const variants = buildSearchVariants(base);
+      const perVariantLimit = 12;
+      const results = await Promise.all(
+        variants.map(v => searchOpenLibrary(v, perVariantLimit).catch(() => []))
+      );
+      return mergeUniqueBookLists(results);
+    }
+
+    function createSb() {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+      const mod = typeof supabase !== "undefined" ? supabase : globalThis.supabase;
+      if (!mod?.createClient) return null;
+      return mod.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: { persistSession: true, autoRefreshToken: true },
+      });
+    }
+
+    function initialsFrom(nameOrEmail) {
+      const s = (nameOrEmail || "?").trim();
+      const parts = s.split(/\s+/).filter(Boolean);
+      if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase().slice(0, 4);
+      return s.slice(0, 2).toUpperCase() || "?";
+    }
+
+    function profileToUser(p) {
+      if (!p) return null;
+      return {
+        id: p.id,
+        name: p.display_name || "Leser*in",
+        username: "@" + (p.username || ""),
+        initials: initialsFrom(p.display_name || p.username || ""),
+      };
+    }
+
+    /* ========== SVG & UI ========== */
+    function Ghost({ size = 40, color = P.ghost, blush = P.ghostPink, style: s }) {
+      return (
+        <svg width={size} height={size} viewBox="0 0 60 66" fill="none" style={{ display:"block", ...s }}>
+          <path d="M30 4C16 4 6 16 6 28v28c0 0 4-6 8-2s4 8 8 4 4-8 8-4 4 6 8 2 4-8 8-4 6 4 8 2V28C54 16 44 4 30 4z" fill={color}/>
+          <ellipse cx="22" cy="28" rx="3" ry="3.5" fill={P.brickDark}/>
+          <ellipse cx="38" cy="28" rx="3" ry="3.5" fill={P.brickDark}/>
+          <ellipse cx="16" cy="34" rx="4" ry="2.5" fill={blush} opacity="0.5"/>
+          <ellipse cx="44" cy="34" rx="4" ry="2.5" fill={blush} opacity="0.5"/>
+        </svg>
+      );
+    }
+
+    function Vine({ side = "left", height = 120 }) {
+      const flip = side === "right" ? "scaleX(-1)" : "";
+      const pts = [0.15, 0.35, 0.55, 0.75];
+      return (
+        <svg width="30" height={height} viewBox={`0 0 30 ${height}`} fill="none" style={{ display:"block", transform:flip, opacity:0.5 }}>
+          <path d={`M15 0 C10 ${height*.2} 20 ${height*.35} 12 ${height*.5} C5 ${height*.65} 22 ${height*.8} 15 ${height}`} stroke={P.foliageLight} strokeWidth="2.5" fill="none"/>
+          {pts.map((t,i) => (
+            <ellipse key={i} cx={i%2===0?8:22} cy={height*t} rx="6" ry="4" fill={P.foliageLight} opacity="0.7"
+              transform={`rotate(${i%2===0?-20:20} ${i%2===0?8:22} ${height*t})`}/>
+          ))}
+        </svg>
+      );
+    }
+
+    function BookFrame({ letter, accent }) {
+      return (
+        <svg width="56" height="72" viewBox="0 0 56 72" fill="none" style={{ display:"block" }}>
+          <rect x="2" y="2" width="52" height="68" rx="4" fill={accent||P.surfaceDark} stroke={P.goldLight} strokeWidth="2.5"/>
+          <rect x="6" y="6" width="44" height="60" rx="2" fill={P.brickDark} opacity="0.3"/>
+          <text x="28" y="44" textAnchor="middle" fontFamily="'Crimson Pro',Georgia,serif" fontSize="28" fontWeight="700" fill={P.cream} opacity="0.85">{letter}</text>
+        </svg>
+      );
+    }
+
+    function Icon({ name, size = 18, color = P.cream }) {
+      const icons = {
+        search:  <><circle cx="11" cy="11" r="7" stroke={color} strokeWidth="1.8" fill="none"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke={color} strokeWidth="1.8" strokeLinecap="round"/></>,
+        plus:    <><line x1="12" y1="5" x2="12" y2="19" stroke={color} strokeWidth="1.8" strokeLinecap="round"/><line x1="5" y1="12" x2="19" y2="12" stroke={color} strokeWidth="1.8" strokeLinecap="round"/></>,
+        x:       <><line x1="6" y1="6" x2="18" y2="18" stroke={color} strokeWidth="1.8" strokeLinecap="round"/><line x1="18" y1="6" x2="6" y2="18" stroke={color} strokeWidth="1.8" strokeLinecap="round"/></>,
+        book:    <><path d="M4 19.5A2.5 2.5 0 016.5 17H20" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/><path d="M4 4.5A2.5 2.5 0 016.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15z" stroke={color} strokeWidth="1.8" fill="none"/></>,
+        users:   <><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" stroke={color} strokeWidth="1.8" fill="none"/><circle cx="9" cy="7" r="4" stroke={color} strokeWidth="1.8" fill="none"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" stroke={color} strokeWidth="1.8" fill="none"/></>,
+        grid:    <><rect x="3" y="3" width="7" height="7" rx="1.5" stroke={color} strokeWidth="1.8" fill="none"/><rect x="14" y="3" width="7" height="7" rx="1.5" stroke={color} strokeWidth="1.8" fill="none"/><rect x="3" y="14" width="7" height="7" rx="1.5" stroke={color} strokeWidth="1.8" fill="none"/><rect x="14" y="14" width="7" height="7" rx="1.5" stroke={color} strokeWidth="1.8" fill="none"/></>,
+        camera:  <><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" stroke={color} strokeWidth="1.8" fill="none"/><circle cx="12" cy="13" r="4" stroke={color} strokeWidth="1.8" fill="none"/></>,
+        link:    <><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round"/></>,
+        check:   <><polyline points="20 6 9 17 4 12" stroke={color} strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/></>,
+        chevron: <><polyline points="9 18 15 12 9 6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/></>,
+        palette: <><circle cx="13.5" cy="6.5" r="2" fill={color} opacity="0.4"/><circle cx="17.5" cy="10.5" r="2" fill={color} opacity="0.4"/><circle cx="8.5" cy="7.5" r="2" fill={color} opacity="0.4"/><circle cx="6.5" cy="12" r="2" fill={color} opacity="0.4"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.04-.23-.29-.38-.63-.38-1.04 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-5.17-4.49-9-10-9z" stroke={color} strokeWidth="1.8" fill="none"/></>,
+        trash:   <><polyline points="3 6 5 6 21 6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" stroke={color} strokeWidth="1.8" fill="none"/><path d="M10 11v6M14 11v6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round"/></>,
+      };
+      return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" style={{ display:"block", flexShrink:0 }}>{icons[name]}</svg>;
+    }
+
+    function Avatar({ initials, size = 40, accent }) {
+      return (
+        <div style={{
+          width:size, height:size, borderRadius:"50%",
+          background: accent||P.brick,
+          border:`2px solid ${P.goldLight}40`,
+          display:"flex", alignItems:"center", justifyContent:"center",
+          fontSize:size*0.32, fontWeight:700, color:P.cream,
+          fontFamily:"'Crimson Pro',Georgia,serif", flexShrink:0,
+        }}>{initials}</div>
+      );
+    }
+
+    function Btn({ children, variant="primary", accent, onClick, style:s, small, disabled }) {
+      const [h, setH] = useState(false);
+      const bg = variant==="primary" ? (accent||P.goldLight) : variant==="secondary" ? `${P.cream}15` : "transparent";
+      const clr = variant==="primary" ? P.brickDark : P.cream;
+      return (
+        <button disabled={disabled} style={{
+          padding: small?"6px 14px":"10px 20px", borderRadius:"12px",
+          fontSize: small?"13px":"14px", fontWeight:600,
+          fontFamily:"'Crimson Pro',Georgia,serif",
+          border: variant==="secondary"?`1px solid ${P.cream}25`:"none",
+          cursor:disabled?"default":"pointer", opacity:disabled?0.45:1, transition:"all 0.2s ease",
+          display:"inline-flex", alignItems:"center", gap:"6px",
+          background:bg, color:clr,
+          transform:h&&!disabled?"translateY(-1px)":"none", ...s,
+        }} onClick={disabled?undefined:onClick} onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)}>
+          {children}
+        </button>
+      );
+    }
+
+    function Modal({ onClose, title, children }) {
+      return (
+        <div style={{
+          position:"fixed", inset:0, background:P.overlay,
+          display:"flex", alignItems:"center", justifyContent:"center",
+          zIndex:1000, padding:"20px",
+          backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)",
+        }} onClick={onClose}>
+          <div style={{
+            background:P.surface, borderRadius:"20px", padding:"28px",
+            maxWidth:"500px", width:"100%",
+            border:`2px solid ${P.goldLight}30`,
+            boxShadow:"0 20px 60px rgba(74,42,31,0.5)",
+            maxHeight:"80vh", overflowY:"auto",
+          }} onClick={e=>e.stopPropagation()}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"24px" }}>
+              <h2 style={{ fontFamily:"'Crimson Pro',Georgia,serif", fontSize:"22px", fontWeight:700, color:P.cream }}>{title}</h2>
+              <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", padding:"4px" }}>
+                <Icon name="x" size={18} color={P.textMuted}/>
+              </button>
+            </div>
+            {children}
+          </div>
+        </div>
+      );
+    }
+
+    function Toast({ message, accent }) {
+      return (
+        <div style={{
+          position:"fixed", bottom:"28px", left:"50%", transform:"translateX(-50%)",
+          background:accent||P.foliage, color:P.cream,
+          padding:"12px 24px", borderRadius:"14px",
+          fontSize:"14px", fontWeight:600, zIndex:2000,
+          fontFamily:"'Crimson Pro',Georgia,serif",
+          boxShadow:"0 8px 32px rgba(74,42,31,0.5)",
+          display:"flex", alignItems:"center", gap:"8px",
+          border:`1px solid ${P.cream}20`,
+        }}>
+          <Ghost size={22}/> {message}
+        </div>
+      );
+    }
+
+    function ConfigScreen() {
+      return (
+        <div style={{ maxWidth:520, margin:"48px auto", padding:24, textAlign:"center", color:P.cream }}>
+          <Ghost size={56} style={{ margin:"0 auto 16px" }}/>
+          <h1 style={{ fontSize:26, marginBottom:12 }}>Supabase einrichten</h1>
+          <p style={{ color:P.textMuted, lineHeight:1.6, marginBottom:20 }}>
+            Trage in <code style={{ color:P.goldLight }}>Shelfmade.html</code> oben im Script <code style={{ color:P.goldLight }}>SUPABASE_URL</code> und{" "}
+            <code style={{ color:P.goldLight }}>SUPABASE_ANON_KEY</code> ein (Project Settings → API). Führe danach <code style={{ color:P.goldLight }}>supabase/schema.sql</code> im SQL Editor aus.
+          </p>
+        </div>
+      );
+    }
+
+    function AuthScreen({ sb, onAuthed }) {
+      const [mode, setMode] = useState("login");
+      const [email, setEmail] = useState("");
+      const [password, setPassword] = useState("");
+      const [displayName, setDisplayName] = useState("");
+      const [err, setErr] = useState("");
+      const [busy, setBusy] = useState(false);
+
+      const submit = async (e) => {
+        e.preventDefault();
+        setErr("");
+        setBusy(true);
+        try {
+          if (mode === "signup") {
+            const { error } = await sb.auth.signUp({
+              email, password,
+              options: { data: { display_name: displayName.trim() || undefined } },
+            });
+            if (error) throw error;
+            onAuthed();
+          } else {
+            const { error } = await sb.auth.signInWithPassword({ email, password });
+            if (error) throw error;
+            onAuthed();
+          }
+        } catch (x) {
+          setErr(x.message || String(x));
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      const input = { width:"100%", padding:"12px 14px", borderRadius:"12px", border:`1.5px solid ${P.cream}20`,
+        background:P.surfaceDark, fontSize:"15px", color:P.cream, fontFamily:"'Crimson Pro',Georgia,serif", marginBottom:"12px", outline:"none", boxSizing:"border-box" };
+
+      return (
+        <div style={{ maxWidth:400, margin:"48px auto", padding:24 }}>
+          <div style={{ textAlign:"center", marginBottom:28 }}>
+            <Ghost size={48} style={{ margin:"0 auto 12px" }}/>
+            <h1 style={{ fontSize:26, color:P.cream }}>Shelfmade</h1>
+            <p style={{ fontSize:14, color:P.textMuted, marginTop:8 }}>{mode === "login" ? "Anmelden" : "Konto erstellen"}</p>
+          </div>
+          <form onSubmit={submit}>
+            {mode === "signup" && (
+              <input style={input} placeholder="Anzeigename (optional)" value={displayName} onChange={e=>setDisplayName(e.target.value)}/>
+            )}
+            <input style={input} type="email" required placeholder="E-Mail" autoComplete="email"
+              value={email} onChange={e=>setEmail(e.target.value)}/>
+            <input style={input} type="password" required placeholder="Passwort" autoComplete={mode==="login"?"current-password":"new-password"}
+              value={password} onChange={e=>setPassword(e.target.value)}/>
+            {err && <p style={{ color:"#e88", fontSize:13, marginBottom:12 }}>{err}</p>}
+            <Btn accent={P.goldLight} disabled={busy} style={{ width:"100%", justifyContent:"center" }}>{busy ? "…" : mode === "login" ? "Anmelden" : "Registrieren"}</Btn>
+          </form>
+          <button type="button" onClick={()=>{ setMode(mode==="login"?"signup":"login"); setErr(""); }}
+            style={{ marginTop:16, background:"none", border:"none", color:P.goldLight, cursor:"pointer", width:"100%", fontFamily:"inherit", fontSize:14 }}>
+            {mode === "login" ? "Noch kein Konto? Registrieren" : "Schon ein Konto? Anmelden"}
+          </button>
+        </div>
+      );
+    }
+
+    function StarRating({ value, onChange, readOnly }) {
+      const v = value == null || value === 0 ? 0 : Math.min(5, Math.max(1, Number(value)));
+      return (
+        <div style={{ display:"flex", gap:2, alignItems:"center", flexWrap:"wrap", marginTop:8, marginBottom:6 }} onClick={e=>e.stopPropagation()}>
+          {[1,2,3,4,5].map(i => (
+            <button type="button" key={i} disabled={readOnly}
+              onClick={()=> !readOnly && onChange?.(v === i ? null : i)}
+              style={{
+                background:"none", border:"none", cursor: readOnly ? "default" : "pointer",
+                padding:"0 1px", fontSize:17, lineHeight:1,
+                color: i <= v ? P.goldLight : `${P.textDim}40`,
+              }}
+              title={readOnly ? "" : (v === i ? "Nochmal tippen: Bewertung löschen" : `${i} Sterne`)}
+            >★</button>
+          ))}
+          {!readOnly && v === 0 && <span style={{ fontSize:10, color:P.textDim, marginLeft:4 }}>tippen</span>}
+        </div>
+      );
+    }
+
+    function CoverThumb({ url, w = 44, h = 62 }) {
+      const [bad, setBad] = useState(false);
+      useEffect(()=> setBad(false), [url]);
+      const shell = { width:w, height:h, flexShrink:0, borderRadius:8, overflow:"hidden",
+        border:`1px solid ${P.cream}12`, background:P.brickDark };
+      if (!url || bad) return <div style={shell} />;
+      return (
+        <div style={shell}>
+          <img src={url} alt="" referrerPolicy="no-referrer"
+            style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }}
+            onError={()=>setBad(true)} />
+        </div>
+      );
+    }
+
+    function BookCard({ book, accent, cardBg, onRemove, showRemove, onRateBook, loanOut, borrowedFrom, onReturnLoan, onLend, readOnlyLoan }) {
+      const [hover, setHover] = useState(false);
+      const [imgErr, setImgErr] = useState(false);
+      useEffect(()=> { setImgErr(false); }, [book.cover_url, book.id]);
+      const letter = (book.title || "?").charAt(0).toUpperCase();
+      const rateOnly = typeof onRateBook === "function";
+      const isBorrowedView = !!borrowedFrom;
+      const lentOut = !!loanOut;
+      const borderLoan = isBorrowedView ? `1.5px solid ${P.foliageLight}70` : lentOut ? `1.5px solid ${P.goldLight}55` : `1.5px solid ${hover ? P.goldLight+"50" : P.cream+"10"}`;
+      return (
+        <div style={{
+          background:cardBg||P.surfaceDark, borderRadius:"16px",
+          border: borderLoan,
+          padding:"14px", position:"relative",
+          transition:"all 0.25s ease",
+          transform:hover?"translateY(-3px)":"none",
+          boxShadow:hover?"0 8px 24px rgba(74,42,31,0.3)":"0 2px 8px rgba(74,42,31,0.15)",
+        }} onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)}>
+          {(isBorrowedView || lentOut) && (
+            <div style={{
+              fontSize:10, fontWeight:800, letterSpacing:"0.6px", textTransform:"uppercase",
+              marginBottom:10, padding:"6px 10px", borderRadius:8, textAlign:"center",
+              background: isBorrowedView ? `${P.foliage}35` : `${P.goldLight}22`,
+              border: `1px solid ${isBorrowedView ? P.foliageLight+"55" : P.goldLight+"45"}`,
+              color: P.cream,
+            }}>
+              {isBorrowedView
+                ? `Geliehen von ${profileToUser(borrowedFrom.lender).name}`
+                : `Verliehen an ${profileToUser(loanOut.borrower).name}`}
+            </div>
+          )}
+          {showRemove && hover && !lentOut && (
+            <button type="button" onClick={e=>{ e.stopPropagation(); onRemove?.(book.id); }} style={{
+              position:"absolute", top:8, right:8, zIndex:2,
+              background:P.brick, border:`1px solid ${P.cream}20`,
+              borderRadius:"50%", width:26, height:26,
+              display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer",
+            }}><Icon name="trash" size={13} color="#e88"/></button>
+          )}
+          {lentOut && showRemove && (
+            <span style={{
+              position:"absolute", top:8, right:8, zIndex:2, fontSize:10, color:P.textDim, maxWidth:100, textAlign:"right",
+            }}>bei Leihe kein Löschen</span>
+          )}
+          <div style={{
+            height:148, borderRadius:12, overflow:"hidden", background:P.brickDark,
+            display:"flex", alignItems:"center", justifyContent:"center", marginBottom:10,
+            border:`1px solid ${P.cream}12`,
+          }}>
+            {book.cover_url && !imgErr ? (
+              <img
+                src={book.cover_url}
+                alt=""
+                referrerPolicy="no-referrer"
+                style={{ width:"100%", height:"100%", objectFit:"contain" }}
+                onError={()=>setImgErr(true)}
+              />
+            ) : (
+              <div style={{ padding:8 }}><BookFrame letter={letter} accent={accent}/></div>
+            )}
+          </div>
+          <div style={{ fontFamily:"'Crimson Pro',Georgia,serif", fontSize:"15px", fontWeight:700, color:P.cream, marginBottom:"4px", lineHeight:1.3 }}>
+            {book.title}
+          </div>
+          <div style={{ fontSize:"12px", color:P.textMuted, marginBottom:"4px" }}>
+            {book.author}{book.year ? ` · ${book.year}` : ""}
+          </div>
+          {!isBorrowedView && (
+            <StarRating
+              value={book.rating}
+              readOnly={!rateOnly}
+              onChange={rateOnly ? (n)=>onRateBook(book.id, n) : undefined}
+            />
+          )}
+          {isBorrowedView && onReturnLoan && (
+            <Btn accent={accent} small style={{ marginTop:8, width:"100%", justifyContent:"center" }}
+              onClick={()=>onReturnLoan(borrowedFrom.loanId)}>Zurückgeben</Btn>
+          )}
+          {lentOut && onReturnLoan && !readOnlyLoan && (
+            <Btn variant="secondary" small style={{ marginTop:8, width:"100%", justifyContent:"center" }}
+              onClick={()=>onReturnLoan(loanOut.loanId)}>Leihe beenden (Zurück)</Btn>
+          )}
+          {showRemove && onLend && !lentOut && !isBorrowedView && (
+            <button type="button" onClick={e=>{ e.stopPropagation(); onLend(book); }}
+              style={{
+                marginTop:8, width:"100%", padding:"8px", borderRadius:10, border:`1px dashed ${P.cream}30`,
+                background:`${P.cream}08`, color:P.goldLight, fontFamily:"inherit", fontSize:12, fontWeight:600, cursor:"pointer",
+              }}>
+              An Freund·in verleihen…
+            </button>
+          )}
+          {book.link ? (
+            <a href={book.link} target="_blank" rel="noreferrer" style={{
+              display:"inline-flex", alignItems:"center", gap:"4px", marginTop:4,
+              fontSize:"11px", color:P.goldLight, textDecoration:"none", fontWeight:600,
+            }} onClick={e=>e.stopPropagation()}>
+              <Icon name="link" size={11} color={P.goldLight}/> Open Library / Info
+            </a>
+          ) : <span style={{ fontSize:"11px", color:P.textDim }}>Kein Link</span>}
+        </div>
+      );
+    }
+
+    function LendBookModal({ onClose, friends, bookTitle, onPickFriend, accent }) {
+      return (
+        <Modal onClose={onClose} title={`Verleihen: ${bookTitle}`}>
+          <p style={{ fontSize:13, color:P.textMuted, marginBottom:16, lineHeight:1.45 }}>
+            Buch geht an einen Freund bzw. eine Freundin. Es bleibt in deinem Konto, erscheint aber beim·der Leihnehmer*in mit Kennzeichnung.
+          </p>
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            {friends.map((f) => {
+              const u = profileToUser(f);
+              return (
+                <Btn key={f.id} accent={accent} style={{ width:"100%", justifyContent:"center" }} onClick={()=>onPickFriend(f.id)}>
+                  {u.name} <span style={{ opacity:0.85 }}>{u.username}</span>
+                </Btn>
+              );
+            })}
+            {friends.length === 0 && (
+              <p style={{ color:P.textDim, textAlign:"center", padding:16 }}>Noch keine Freund·innen – unter „Freunde“ verbinden.</p>
+            )}
+          </div>
+        </Modal>
+      );
+    }
+
+    function AddBookModal({ onClose, onAddBook, accent }) {
+      const [tab, setTab] = useState("search");
+      const [query, setQuery] = useState("");
+      const [results, setResults] = useState([]);
+      const [searching, setSearching] = useState(false);
+      const [searchErr, setSearchErr] = useState("");
+      const [suggestions, setSuggestions] = useState([]);
+      const [suggestLoading, setSuggestLoading] = useState(false);
+      const [suggestOpen, setSuggestOpen] = useState(false);
+      const blurTimer = useRef(null);
+      const [scanning, setScanning] = useState(false);
+      const [scanResult, setScanResult] = useState(null);
+      const [scanMiss, setScanMiss] = useState(false);
+
+      useEffect(() => {
+        if (tab !== "search") {
+          setSuggestions([]);
+          setSuggestOpen(false);
+        }
+      }, [tab]);
+
+      /* Live-Vorschläge beim Tippen (kurz warten, damit die API nicht flutet) */
+      useEffect(() => {
+        if (tab !== "search") return;
+        const q = query.trim();
+        if (q.length < 2) {
+          setSuggestions([]);
+          setSuggestLoading(false);
+          return;
+        }
+        setSuggestLoading(true);
+        const ac = new AbortController();
+        const t = setTimeout(async () => {
+          try {
+            const list = await searchOpenLibrary(q, 10, ac.signal);
+            setSuggestions(list.slice(0, 8));
+          } catch (e) {
+            if (e.name !== "AbortError") setSuggestions([]);
+          } finally {
+            setSuggestLoading(false);
+          }
+        }, 350);
+        return () => { clearTimeout(t); ac.abort(); };
+      }, [query, tab]);
+
+      const handleSearch = async () => {
+        if (!query.trim()) return;
+        setSuggestOpen(false);
+        setSearching(true);
+        setSearchErr("");
+        setResults([]);
+        try {
+          const list = await searchOpenLibrarySmart(query);
+          setResults(list);
+          if (list.length === 0) setSearchErr("Nichts gefunden – anderen Suchbegriff probieren.");
+        } catch (e) {
+          setSearchErr(e.message || "Suche fehlgeschlagen.");
+          setResults([]);
+        } finally {
+          setSearching(false);
+        }
+      };
+
+      const pickSuggestion = (b) => {
+        setQuery(b.title);
+        setResults([b]);
+        setSuggestions([]);
+        setSuggestOpen(false);
+        setSearchErr("");
+      };
+
+      const handleScan = async () => {
+        setScanning(true);
+        setScanResult(null);
+        setScanMiss(false);
+        await new Promise(r => setTimeout(r, 1900));
+        try {
+          const seed = query.trim() || "novel";
+          const list = await searchOpenLibrarySmart(seed);
+          const pick = list.length ? list[Math.floor(Math.random() * Math.min(list.length, 12))] : null;
+          setScanResult(pick);
+          setScanMiss(!pick);
+        } catch {
+          setScanResult(null);
+          setScanMiss(true);
+        } finally {
+          setScanning(false);
+        }
+      };
+
+      const inputStyle = {
+        width:"100%", padding:"10px 14px 10px 38px", borderRadius:"12px",
+        border:`1.5px solid ${P.cream}20`, background:P.surfaceDark,
+        fontSize:"14px", outline:"none", boxSizing:"border-box",
+        fontFamily:"'Crimson Pro',Georgia,serif", color:P.cream,
+      };
+
+      return (
+        <Modal onClose={onClose} title="Buch hinzufügen">
+          <div style={{ display:"flex", gap:"3px", padding:"3px", background:P.surfaceDark, borderRadius:"14px", marginBottom:"24px" }}>
+            {[{id:"search",label:"Suche",icon:"search"},{id:"camera",label:"Foto-Scan",icon:"camera"}].map(t=>(
+              <button key={t.id} type="button" onClick={()=>setTab(t.id)} style={{
+                flex:1, padding:"9px", borderRadius:"11px", fontSize:"13px", fontWeight:600,
+                background:tab===t.id?P.surface:"transparent",
+                color:tab===t.id?P.cream:P.textMuted,
+                border:tab===t.id?`1px solid ${P.cream}15`:"1px solid transparent",
+                cursor:"pointer", transition:"all 0.2s",
+                fontFamily:"'Crimson Pro',Georgia,serif",
+                display:"flex", alignItems:"center", justifyContent:"center", gap:"6px",
+              }}>
+                <Icon name={t.icon} size={14} color={tab===t.id?P.cream:P.textMuted}/> {t.label}
+              </button>
+            ))}
+          </div>
+
+          {tab==="search" && (
+            <>
+              <div style={{ display:"flex", gap:"8px", marginBottom:"8px" }}>
+                <div style={{ flex:1, position:"relative" }}>
+                  <div style={{ position:"absolute", left:"12px", top:"50%", transform:"translateY(-50%)", zIndex:2, pointerEvents:"none" }}>
+                    <Icon name="search" size={15} color={P.textDim}/>
+                  </div>
+                  <input
+                    style={inputStyle}
+                    placeholder="Titel oder Autor tippen – Vorschläge erscheinen automatisch"
+                    value={query}
+                    autoComplete="off"
+                    onChange={e=>{ setQuery(e.target.value); setSuggestOpen(true); }}
+                    onFocus={()=> setSuggestOpen(true)}
+                    onBlur={()=>{
+                      blurTimer.current = setTimeout(()=> setSuggestOpen(false), 200);
+                    }}
+                    onKeyDown={e=>{
+                      if (e.key==="Enter" && !searching) {
+                        e.preventDefault();
+                        if (blurTimer.current) clearTimeout(blurTimer.current);
+                        handleSearch();
+                      }
+                    }}
+                  />
+                  {suggestOpen && query.trim().length >= 2 && (suggestions.length > 0 || suggestLoading) && (
+                    <div style={{
+                      position:"absolute", left:0, right:0, top:"calc(100% + 6px)", zIndex:1200,
+                      maxHeight:220, overflowY:"auto",
+                      background:P.brickDark, borderRadius:14, border:`1px solid ${P.cream}18`,
+                      boxShadow:"0 12px 40px rgba(0,0,0,0.35)",
+                    }}>
+                      {suggestLoading && suggestions.length===0 && (
+                        <div style={{ padding:"12px 14px", fontSize:13, color:P.textMuted }}>Vorschläge werden geladen…</div>
+                      )}
+                      {suggestions.map((b, i)=>(
+                        <button
+                          key={`sug-${b.title}-${i}`}
+                          type="button"
+                          onMouseDown={e=>{ e.preventDefault(); if (blurTimer.current) clearTimeout(blurTimer.current); pickSuggestion(b); }}
+                          style={{
+                            display:"flex", alignItems:"center", gap:12, width:"100%", textAlign:"left",
+                            padding:"10px 14px", border:"none", borderBottom:i<suggestions.length-1?`1px solid ${P.cream}08`:"none",
+                            background:"transparent", cursor:"pointer", fontFamily:"inherit",
+                            color:P.cream, fontSize:14,
+                          }}
+                        >
+                          <CoverThumb url={b.cover_url}/>
+                          <span style={{ flex:1, minWidth:0 }}>
+                            <span style={{ fontWeight:700, display:"block" }}>{b.title}</span>
+                            <span style={{ display:"block", fontSize:12, color:P.textMuted, marginTop:2 }}>{b.author}{b.year ? ` · ${b.year}` : ""}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <Btn accent={accent} disabled={searching} onClick={handleSearch}>{searching ? "Suche…" : "Suchen"}</Btn>
+              </div>
+              <p style={{ fontSize:"12px", color:P.textDim, marginBottom:12, lineHeight:1.45 }}>
+                Beim Tippen: <strong style={{ color:P.textMuted }}>Live-Vorschläge</strong> von Open Library. Bei <strong style={{ color:P.textMuted }}>Suchen</strong> werden mehrere Varianten kombiniert (Tippfehler, erste Wörter, Umlaute).
+              </p>
+              {searchErr && <p style={{ fontSize:13, color:"#e8a598", marginBottom:12 }}>{searchErr}</p>}
+              <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+                {results.map((b,i)=>(
+                  <div key={`${b.title}-${i}`} style={{
+                    display:"flex", alignItems:"center", justifyContent:"space-between", gap:12,
+                    padding:"12px 14px", borderRadius:"14px", background:P.surfaceDark,
+                    border:`1px solid ${P.cream}10`,
+                  }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:12, minWidth:0, flex:1 }}>
+                      <CoverThumb url={b.cover_url} w={48} h={68}/>
+                      <div style={{ minWidth:0 }}>
+                        <div style={{ fontSize:"14px", fontWeight:700, color:P.cream }}>{b.title}</div>
+                        <div style={{ fontSize:"12px", color:P.textMuted }}>{b.author}{b.year ? ` · ${b.year}` : ""}</div>
+                      </div>
+                    </div>
+                    <Btn accent={accent} small onClick={()=>{ onAddBook(b); onClose(); }}>
+                      <Icon name="plus" size={13} color={P.brickDark}/> Hinzufügen
+                    </Btn>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {tab==="camera" && (
+            <div style={{ textAlign:"center" }}>
+              <div role="button" tabIndex={0} onClick={handleScan} onKeyDown={e=>e.key==="Enter"&&handleScan()} style={{
+                width:"100%", height:"200px", borderRadius:"16px",
+                background:P.surfaceDark, border:`2px dashed ${P.cream}20`,
+                display:"flex", flexDirection:"column",
+                alignItems:"center", justifyContent:"center",
+                cursor:"pointer", transition:"all 0.2s",
+              }}>
+                {scanning ? (
+                  <>
+                    <Ghost size={44} style={{ marginBottom:"12px", animation:"ghostFloat 1.5s ease-in-out infinite" }}/>
+                    <div style={{ fontSize:"13px", color:P.textMuted }}>Geist analysiert das Buch…</div>
+                    <div style={{ width:"100px", height:"3px", background:P.brick, borderRadius:"2px", marginTop:"12px", overflow:"hidden" }}>
+                      <div style={{ width:"40%", height:"100%", background:P.goldLight, borderRadius:"2px", animation:"scanMove 1.5s ease-in-out infinite" }}/>
+                    </div>
+                  </>
+                ) : scanResult ? (
+                  <>
+                    {scanResult.cover_url && (
+                      <div style={{ marginBottom:12 }}><CoverThumb url={scanResult.cover_url} w={72} h={102}/></div>
+                    )}
+                    <Icon name="check" size={28} color={P.foliageLight}/>
+                    <div style={{ fontWeight:700, fontSize:"16px", marginTop:"10px", color:P.cream }}>{scanResult.title}</div>
+                    <div style={{ fontSize:"13px", color:P.textMuted }}>{scanResult.author}</div>
+                  </>
+                ) : (
+                  <>
+                    <Icon name="camera" size={32} color={P.textDim}/>
+                    <div style={{ color:P.textMuted, fontSize:"14px", marginTop:"10px" }}>Foto simulieren</div>
+                    <div style={{ color:P.textDim, fontSize:"12px", marginTop:"2px" }}>KI erkennt das Buch automatisch</div>
+                  </>
+                )}
+              </div>
+              {scanResult && (
+                <Btn accent={accent} onClick={()=>{ onAddBook(scanResult); onClose(); }} style={{ marginTop:"16px" }}>Hinzufügen</Btn>
+              )}
+              {!scanning && scanMiss && !scanResult && (
+                <p style={{ color:P.textDim, fontSize:13, marginTop:14 }}>Kein Vorschlag – Internet prüfen oder im Tab „Suche“ einen Titel eingeben, dann Foto erneut simulieren.</p>
+              )}
+            </div>
+          )}
+        </Modal>
+      );
+    }
+
+    function ProfilePage({ user, books, borrowedItems, accent, cardBg, onRemoveBook, onRateBook, onOpenAdd, themeKey, onSetTheme, friendCount, onReturnLoan, onLendBook }) {
+      const ownCount = books.filter((b)=>!b.loanOut).length;
+      const lentCount = books.filter((b)=>b.loanOut).length;
+      return (
+        <div style={{ maxWidth:"860px", margin:"0 auto", padding:"36px 24px" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:"18px", marginBottom:"36px" }}>
+            <div style={{ position:"relative" }}>
+              <Avatar initials={user.initials} size={64} accent={accent}/>
+              <Ghost size={24} style={{ position:"absolute", top:-8, right:-10 }}/>
+            </div>
+            <div>
+              <h1 style={{ fontSize:"28px", fontWeight:700, color:P.cream, letterSpacing:"-0.3px" }}>{user.name}</h1>
+              <p style={{ fontSize:"14px", color:P.textMuted, lineHeight:1.5 }}>
+                {user.username} · {ownCount} im Regal · {lentCount} verliehen · {borrowedItems.length} geliehen · {friendCount} Freund·innen
+              </p>
+            </div>
+          </div>
+
+          {borrowedItems.length > 0 && (
+            <>
+              <div style={{ marginBottom:12 }}>
+                <h2 style={{ fontSize:"20px", fontWeight:700, color:P.foliageLight }}>Gerade geliehen</h2>
+                <p style={{ fontSize:12, color:P.textMuted, marginTop:4 }}>Diese Exemplare liegen bei dir · markiert für dich und für Freund·innen an deinem Regal.</p>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:"14px", marginBottom:36 }}>
+                {borrowedItems.map((row) => (
+                  <BookCard
+                    key={`br-${row.loanId}`}
+                    book={row.book}
+                    accent={accent}
+                    cardBg={cardBg}
+                    borrowedFrom={{ loanId: row.loanId, lender: row.lender }}
+                    onReturnLoan={onReturnLoan}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"18px" }}>
+            <h2 style={{ fontSize:"20px", fontWeight:700, color:P.cream }}>Meine Bücher</h2>
+            <Btn accent={accent} onClick={onOpenAdd}><Icon name="plus" size={14} color={P.brickDark}/> Hinzufügen</Btn>
+          </div>
+
+          {books.length===0 ? (
+            <div style={{ textAlign:"center", padding:"50px 20px" }}>
+              <Ghost size={56} style={{ margin:"0 auto 12px" }}/>
+              <p style={{ color:P.textDim }}>Dein Regal ist leer – füge dein erstes Buch hinzu.</p>
+            </div>
+          ) : (
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:"14px", marginBottom:"40px" }}>
+              {books.map((b)=>(
+                <BookCard
+                  key={b.id}
+                  book={b}
+                  accent={accent}
+                  cardBg={cardBg}
+                  showRemove
+                  onRemove={onRemoveBook}
+                  onRateBook={onRateBook}
+                  loanOut={b.loanOut}
+                  onReturnLoan={onReturnLoan}
+                  onLend={onLendBook}
+                />
+              ))}
+            </div>
+          )}
+
+          <div style={{ padding:"22px 24px", borderRadius:"18px", background:P.surfaceDark, border:`1px solid ${P.cream}10`, marginBottom:"20px" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:"8px", marginBottom:"14px" }}>
+              <Icon name="palette" size={17} color={P.textMuted}/>
+              <span style={{ fontSize:"15px", fontWeight:700, color:P.cream }}>Akzentfarbe</span>
+            </div>
+            <div style={{ display:"flex", gap:"10px", flexWrap:"wrap" }}>
+              {Object.entries(THEMES).map(([key,t])=>(
+                <button key={key} type="button" onClick={()=>onSetTheme(key)} title={t.name} style={{
+                  width:"38px", height:"38px", borderRadius:"50%",
+                  background:t.accent, cursor:"pointer",
+                  border:themeKey===key?`3px solid ${P.cream}`:"3px solid transparent",
+                  outline:themeKey===key?`2px solid ${t.accent}60`:"none",
+                  outlineOffset:"2px", transition:"all 0.2s",
+                  boxShadow:"0 2px 8px rgba(0,0,0,0.2)",
+                }}/>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ padding:"16px 20px", borderRadius:"14px", background:P.surfaceDark, border:`1px solid ${P.cream}08`, fontSize:"12px", color:P.textDim, lineHeight:1.8 }}>
+            <span style={{ fontWeight:700, textTransform:"uppercase", letterSpacing:"0.8px", fontSize:"10px" }}>Backend</span><br/>
+            <span style={{ color:P.textMuted }}>Supabase · Postgres · Auth · Row Level Security</span>
+          </div>
+        </div>
+      );
+    }
+
+    function FriendsPage({ accent, cardBg, currentProfile, friends, discover, friendships, incoming, outgoing,
+      onRefresh, sb, toast }) {
+      const [viewFriend, setViewFriend] = useState(null);
+      const [theirBooks, setTheirBooks] = useState([]);
+      const [theirLoanMap, setTheirLoanMap] = useState({});
+      const [loadingBooks, setLoadingBooks] = useState(false);
+      const [showAdd, setShowAdd] = useState(false);
+      const [inviteUser, setInviteUser] = useState("");
+
+      const openFriend = async (fid) => {
+        const fp = friends.find(f=>f.id===fid);
+        setViewFriend(fp||null);
+        setTheirBooks([]);
+        setTheirLoanMap({});
+        if (!fid) return;
+        setLoadingBooks(true);
+        const { data, error } = await sb.from("books").select("*").eq("user_id", fid).order("created_at", { ascending: false });
+        if (error) {
+          toast(error.message);
+          setLoadingBooks(false);
+          return;
+        }
+        setTheirBooks(data||[]);
+        const { data: lns } = await sb.from("book_loans").select("*").eq("lender_id", fid).eq("status", "active");
+        const brw = [...new Set((lns||[]).map((l)=>l.borrower_id))];
+        const { data: bprofs } = brw.length ? await sb.from("profiles").select("*").in("id", brw) : { data: [] };
+        const bm = Object.fromEntries((bprofs||[]).map((p)=>[p.id, p]));
+        const mmap = {};
+        (lns||[]).forEach((l) => { mmap[l.book_id] = { loanId: l.id, borrower: bm[l.borrower_id] }; });
+        setTheirLoanMap(mmap);
+        setLoadingBooks(false);
+      };
+
+      const sendRequest = async (toId) => {
+        const { error } = await sb.from("friendships").insert({ requester_id: currentProfile.id, addressee_id: toId, status: "pending" });
+        if (error) toast(error.message); else toast("Anfrage gesendet");
+        onRefresh();
+        setShowAdd(false);
+      };
+
+      const acceptIncoming = async (row) => {
+        const { error } = await sb.from("friendships").update({ status: "accepted" }).eq("id", row.id);
+        if (error) toast(error.message); else toast("Freundschaft akzeptiert");
+        onRefresh();
+      };
+
+      const rejectIncoming = async (rowId) => {
+        const { error } = await sb.from("friendships").delete().eq("id", rowId);
+        if (error) toast(error.message); else onRefresh();
+      };
+
+      const friendIdSet = new Set(friends.map(f=>f.id));
+      const discoverRows = discover.filter(u => {
+        if (friendIdSet.has(u.id)) return false;
+        const rel = friendships.find(f =>
+          (f.requester_id === currentProfile.id && f.addressee_id === u.id) ||
+          (f.addressee_id === currentProfile.id && f.requester_id === u.id));
+        return !rel;
+      });
+
+      return (
+        <div style={{ maxWidth:"860px", margin:"0 auto", padding:"36px 24px" }}>
+          <h1 style={{ fontSize:"28px", fontWeight:700, color:P.cream, marginBottom:"4px" }}>Freunde</h1>
+          <p style={{ fontSize:"14px", color:P.textMuted, marginBottom:"24px" }}>{friends.length} Freunde</p>
+
+          {incoming.length > 0 && (
+            <div style={{ marginBottom:24 }}>
+              <h2 style={{ fontSize:"16px", color:P.goldLight, marginBottom:10 }}>Eingegangene Anfragen</h2>
+              {incoming.map(row=>{
+                const p = row.requester;
+                const uObj = profileToUser(p);
+                if (!uObj) return null;
+                return (
+                  <div key={row.id} style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 16px", borderRadius:"14px",
+                    background:P.surfaceDark, border:`1px solid ${P.cream}12`, marginBottom:8 }}>
+                    <Avatar initials={uObj.initials} size={40} accent={accent}/>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontWeight:700 }}>{uObj.name}</div>
+                      <div style={{ fontSize:12, color:P.textMuted }}>{uObj.username}</div>
+                    </div>
+                    <Btn accent={accent} small onClick={()=>acceptIncoming(row)}>Annehmen</Btn>
+                    <Btn variant="secondary" small onClick={()=>rejectIncoming(row.id)}>Ablehnen</Btn>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div style={{ display:"flex", flexDirection:"column", gap:"8px", marginBottom:"24px" }}>
+            {friends.map(f=>{
+              const uObj = profileToUser(f);
+              return (
+              <button key={f.id} type="button" onClick={()=>openFriend(f.id)} style={{
+                display:"flex", alignItems:"center", gap:"14px",
+                padding:"14px 18px", borderRadius:"16px",
+                background:P.surfaceDark, border:`1px solid ${P.cream}10`,
+                cursor:"pointer", transition:"all 0.2s", textAlign:"left",
+                fontFamily:"inherit", color:"inherit",
+              }}>
+                <Avatar initials={uObj.initials} size={42} accent={accent}/>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:"15px", fontWeight:700, color:P.cream }}>{uObj.name}</div>
+                  <div style={{ fontSize:"12px", color:P.textMuted }}>{uObj.username}</div>
+                </div>
+                <Icon name="chevron" size={16} color={P.textDim}/>
+              </button>
+            );})}
+          </div>
+
+          {outgoing.length > 0 && (
+            <p style={{ fontSize:13, color:P.textDim, marginBottom:16 }}>
+              Ausstehende Anfragen: {outgoing.length}
+            </p>
+          )}
+
+          <Btn variant="secondary" onClick={()=>setShowAdd(true)}>
+            <Icon name="plus" size={14}/> Freunde finden
+          </Btn>
+
+          {showAdd && (
+            <Modal onClose={()=>setShowAdd(false)} title="Freunde finden">
+              <p style={{ fontSize:13, color:P.textMuted, marginBottom:12 }}>Nutzername (exakt, z. B. <code style={{color:P.goldLight}}>reader_a1b2c3d4</code>)</p>
+              <div style={{ display:"flex", gap:8, marginBottom:16 }}>
+                <input value={inviteUser} onChange={e=>setInviteUser(e.target.value)}
+                  placeholder="username"
+                  style={{ flex:1, padding:"10px 12px", borderRadius:12, border:`1px solid ${P.cream}20`, background:P.surfaceDark, color:P.cream, fontFamily:"inherit" }}/>
+                <Btn accent={accent} onClick={()=>{
+                  const q = inviteUser.trim().toLowerCase();
+                  const u = discoverRows.find(x => (x.username||"").toLowerCase() === q);
+                  if (u) sendRequest(u.id); else toast("Nutzer nicht gefunden oder schon verbunden");
+                }}>Suchen &amp; anfragen</Btn>
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+                {discoverRows.length===0 ? (
+                  <p style={{ textAlign:"center", color:P.textDim, padding:"20px" }}>Keine weiteren Profile — oder alle schon verbunden.</p>
+                ) : discoverRows.map(p=>{
+                  const uObj = profileToUser(p);
+                  return (
+                    <div key={p.id} style={{
+                      display:"flex", alignItems:"center", gap:"14px",
+                      padding:"12px 14px", borderRadius:"14px", background:P.surfaceDark,
+                    }}>
+                      <Avatar initials={uObj.initials} size={38} accent={accent}/>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:"14px", fontWeight:700, color:P.cream }}>{uObj.name}</div>
+                        <div style={{ fontSize:"12px", color:P.textMuted }}>{uObj.username}</div>
+                      </div>
+                      <Btn accent={accent} small onClick={()=>sendRequest(p.id)}>Anfragen</Btn>
+                    </div>
+                  );
+                })}
+              </div>
+            </Modal>
+          )}
+
+          {viewFriend && (
+            <Modal onClose={()=>{ setViewFriend(null); setTheirBooks([]); setTheirLoanMap({}); }} title={profileToUser(viewFriend).name}>
+              <div style={{ display:"flex", alignItems:"center", gap:"14px", marginBottom:"24px" }}>
+                <Avatar initials={profileToUser(viewFriend).initials} size={48} accent={accent}/>
+                <div>
+                  <div style={{ fontWeight:700, color:P.cream }}>{profileToUser(viewFriend).name}</div>
+                  <div style={{ fontSize:"13px", color:P.textMuted }}>{profileToUser(viewFriend).username}</div>
+                </div>
+              </div>
+              {loadingBooks ? <p style={{ color:P.textMuted }}>Lade Bücher…</p> : (
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:"12px" }}>
+                {theirBooks.map((b)=> (
+                  <BookCard
+                    key={b.id}
+                    book={b}
+                    accent={accent}
+                    cardBg={cardBg}
+                    loanOut={theirLoanMap[b.id]}
+                    readOnlyLoan
+                  />
+                ))}
+                {theirBooks.length===0 && <p style={{ color:P.textDim, gridColumn:"1/-1" }}>Noch keine Bücher.</p>}
+              </div>)}
+            </Modal>
+          )}
+        </div>
+      );
+    }
+
+    function mergeGroupBooksByTitleAuthor(books, getProfile) {
+      const keyOf = (b) => `${String(b.title).trim().toLowerCase()}|${String(b.author).trim().toLowerCase()}`;
+      const map = new Map();
+      for (const b of books) {
+        const owner = getProfile(b.user_id);
+        if (!owner) continue;
+        const k = keyOf(b);
+        if (!map.has(k)) {
+          map.set(k, {
+            title: b.title,
+            author: b.author,
+            year: b.year,
+            link: b.link,
+            cover_url: b.cover_url || null,
+            owners: [owner],
+          });
+        } else {
+          const e = map.get(k);
+          if (!e.owners.find((o) => o.id === owner.id)) e.owners.push(owner);
+          if (!e.cover_url && b.cover_url) e.cover_url = b.cover_url;
+        }
+      }
+      return [...map.values()];
+    }
+
+    function GroupBookCard({ entry, accent, cardBg }) {
+      const [imgErr, setImgErr] = useState(false);
+      useEffect(()=> { setImgErr(false); }, [entry.cover_url, entry.title]);
+      const letter = (entry.title || "?").charAt(0).toUpperCase();
+      return (
+        <div style={{
+          background:cardBg||P.surfaceDark, borderRadius:"16px",
+          border:`1.5px solid ${P.cream}10`,
+          padding:"14px", position:"relative",
+        }}>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:8, alignItems:"center", marginBottom:10 }}>
+            <span style={{ fontSize:11, color:P.textDim, marginRight:4 }}>Regal von:</span>
+            {entry.owners.map((o) => {
+              const u = profileToUser(o);
+              return (
+                <span key={o.id} title={`${u.name} ${u.username}`} style={{ display:"inline-flex" }}>
+                  <Avatar initials={u.initials} size={32} accent={accent}/>
+                </span>
+              );
+            })}
+          </div>
+          <div style={{
+            height:148, borderRadius:12, overflow:"hidden", background:P.brickDark,
+            display:"flex", alignItems:"center", justifyContent:"center", marginBottom:10,
+            border:`1px solid ${P.cream}12`,
+          }}>
+            {entry.cover_url && !imgErr ? (
+              <img
+                src={entry.cover_url}
+                alt=""
+                referrerPolicy="no-referrer"
+                style={{ width:"100%", height:"100%", objectFit:"contain" }}
+                onError={()=>setImgErr(true)}
+              />
+            ) : (
+              <div style={{ padding:8 }}><BookFrame letter={letter} accent={accent}/></div>
+            )}
+          </div>
+          <div style={{ fontFamily:"'Crimson Pro',Georgia,serif", fontSize:"15px", fontWeight:700, color:P.cream, marginBottom:"4px", lineHeight:1.3 }}>
+            {entry.title}
+          </div>
+          <div style={{ fontSize:"12px", color:P.textMuted }}>
+            {entry.author}{entry.year ? ` · ${entry.year}` : ""}
+          </div>
+          {entry.link ? (
+            <a href={entry.link} target="_blank" rel="noreferrer" style={{
+              display:"inline-flex", alignItems:"center", gap:"4px", marginTop:8,
+              fontSize:"11px", color:P.goldLight, textDecoration:"none", fontWeight:600,
+            }}>
+              <Icon name="link" size={11} color={P.goldLight}/> Link
+            </a>
+          ) : null}
+        </div>
+      );
+    }
+
+    function GroupsPage({ accent, cardBg, sb, toast, currentUserId, visible }) {
+      const [groups, setGroups] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [detailGroup, setDetailGroup] = useState(null);
+      const [mergedBooks, setMergedBooks] = useState([]);
+      const [booksLoading, setBooksLoading] = useState(false);
+      const [showCreate, setShowCreate] = useState(false);
+      const [newName, setNewName] = useState("");
+      const [newDesc, setNewDesc] = useState("");
+
+      const loadGroups = useCallback(async () => {
+        setLoading(true);
+        const { data: grp, error } = await sb.from("reading_groups").select("*").order("created_at", { ascending: false });
+        if (error) { toast(error.message); setLoading(false); return; }
+        const { data: mems } = await sb.from("reading_group_members").select("group_id, user_id");
+        const byG = {};
+        for (const m of mems || []) {
+          if (!byG[m.group_id]) byG[m.group_id] = [];
+          byG[m.group_id].push(m.user_id);
+        }
+        const enriched = (grp || []).map((g) => {
+          const mids = byG[g.id] || [];
+          return {
+            ...g,
+            memberIds: mids,
+            memberCount: mids.length,
+            isMember: mids.includes(currentUserId),
+            isCreator: g.created_by === currentUserId,
+          };
+        });
+        setGroups(enriched);
+        setLoading(false);
+      }, [sb, toast, currentUserId]);
+
+      useEffect(() => {
+        if (!visible) return;
+        loadGroups();
+      }, [visible, loadGroups]);
+
+      useEffect(() => {
+        if (!visible) {
+          setDetailGroup(null);
+          setMergedBooks([]);
+        }
+      }, [visible]);
+
+      const openDetail = async (g) => {
+        setDetailGroup(g);
+        setMergedBooks([]);
+        if (!g.isMember) {
+          setBooksLoading(false);
+          return;
+        }
+        const ids = g.memberIds || [];
+        if (!ids.length) return;
+        setBooksLoading(true);
+        const { data: bks, error } = await sb.from("books").select("*").in("user_id", ids).order("created_at", { ascending: false });
+        if (error) { toast(error.message); setBooksLoading(false); return; }
+        const { data: profs } = await sb.from("profiles").select("*").in("id", ids);
+        const pmap = {};
+        (profs || []).forEach((p) => { pmap[p.id] = p; });
+        const merged = mergeGroupBooksByTitleAuthor(bks || [], (uid) => pmap[uid]);
+        setMergedBooks(merged);
+        setBooksLoading(false);
+      };
+
+      const joinGroup = async (g) => {
+        const { error } = await sb.from("reading_group_members").insert({ group_id: g.id, user_id: currentUserId });
+        if (error) { toast(error.message); return; }
+        toast("Du bist der Gruppe beigetreten.");
+        await loadGroups();
+        const { data: mems } = await sb.from("reading_group_members").select("user_id").eq("group_id", g.id);
+        const mids = (mems || []).map((m) => m.user_id);
+        const updated = {
+          ...g,
+          memberIds: mids,
+          memberCount: mids.length,
+          isMember: true,
+          isCreator: g.created_by === currentUserId,
+        };
+        setDetailGroup(updated);
+        openDetail(updated);
+      };
+
+      const leaveGroup = async (g) => {
+        if (g.created_by === currentUserId) { toast("Gruppe löschen statt verlassen (du bist Ersteller*in)."); return; }
+        const { error } = await sb.from("reading_group_members").delete().eq("group_id", g.id).eq("user_id", currentUserId);
+        if (error) { toast(error.message); return; }
+        toast("Gruppe verlassen.");
+        setDetailGroup(null);
+        await loadGroups();
+      };
+
+      const deleteGroup = async (g) => {
+        if (!confirm("Gruppe wirklich löschen? Alle Mitglieder verlieren die Ansicht.")) return;
+        const { error } = await sb.from("reading_groups").delete().eq("id", g.id);
+        if (error) { toast(error.message); return; }
+        toast("Gruppe gelöscht.");
+        setDetailGroup(null);
+        await loadGroups();
+      };
+
+      const createGroup = async () => {
+        const name = newName.trim();
+        if (!name) { toast("Name fehlt."); return; }
+        const { data, error } = await sb.from("reading_groups").insert({
+          name,
+          description: newDesc.trim(),
+          created_by: currentUserId,
+        }).select().single();
+        if (error) { toast(error.message); return; }
+        await sb.from("reading_group_members").insert({ group_id: data.id, user_id: currentUserId });
+        toast("Gruppe erstellt.");
+        setShowCreate(false);
+        setNewName("");
+        setNewDesc("");
+        await loadGroups();
+      };
+
+      const inputStyle = {
+        width:"100%", padding:"10px 14px", borderRadius:"12px",
+        border:`1.5px solid ${P.cream}15`, background:P.surfaceDark,
+        fontSize:"14px", color:P.cream, fontFamily:"'Crimson Pro',Georgia,serif", outline:"none", boxSizing:"border-box",
+      };
+
+      const closeDetail = () => {
+        setDetailGroup(null);
+        setMergedBooks([]);
+      };
+
+      return (
+        <div style={{ maxWidth: detailGroup ? 960 : 860, margin:"0 auto", padding:"36px 24px", minHeight:"72vh", position:"relative" }}>
+          {detailGroup ? (
+            <>
+              <button
+                type="button"
+                onClick={closeDetail}
+                style={{
+                  background:"none", border:"none", color:P.goldLight, cursor:"pointer",
+                  fontFamily:"'Crimson Pro',Georgia,serif", fontSize:15, fontWeight:600, marginBottom:20,
+                  display:"inline-flex", alignItems:"center", gap:8, padding:0,
+                }}
+              >
+                <span style={{ fontSize:18, lineHeight:1 }} aria-hidden>←</span>
+                Alle Gruppen
+              </button>
+              <h1 style={{ fontSize:"clamp(24px, 4vw, 34px)", fontWeight:700, color:P.cream, marginBottom:10, letterSpacing:"-0.5px" }}>
+                {detailGroup.name}
+              </h1>
+              <p style={{ fontSize:14, color:P.textMuted, marginBottom:22, lineHeight:1.55, maxWidth:720 }}>
+                {detailGroup.description || "Keine Beschreibung."}
+              </p>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:10, marginBottom:28, alignItems:"center" }}>
+                {!detailGroup.isMember && (
+                  <Btn accent={accent} onClick={()=>joinGroup(detailGroup)}><Icon name="plus" size={13} color={P.brickDark}/> Beitreten</Btn>
+                )}
+                {detailGroup.isMember && detailGroup.created_by !== currentUserId && (
+                  <Btn variant="secondary" onClick={()=>leaveGroup(detailGroup)}>Gruppe verlassen</Btn>
+                )}
+                {detailGroup.isCreator && (
+                  <Btn variant="secondary" onClick={()=>deleteGroup(detailGroup)}>Gruppe löschen</Btn>
+                )}
+              </div>
+              {!detailGroup.isMember ? (
+                <p style={{ color:P.textMuted, fontSize:15, lineHeight:1.65 }}>
+                  Tritt der Gruppe bei, um alle gemeinsamen Bücher zu sehen (eigene Regale + Regale der anderen Mitglieder). Gleiche Bücher erscheinen einmal mit allen Besitzer-Symbolen.
+                </p>
+              ) : (
+                <>
+                  <div style={{ fontSize:11, fontWeight:700, color:P.textDim, textTransform:"uppercase", letterSpacing:0.8, marginBottom:14 }}>
+                    Gemeinsame Bibliothek (gleicher Titel + Autor = eine Karte · Besitzer als Symbole)
+                  </div>
+                  {booksLoading ? (
+                    <p style={{ color:P.textMuted, fontSize:15 }}>Lade Bücher…</p>
+                  ) : (
+                    <div style={{
+                      display:"grid",
+                      gridTemplateColumns:"repeat(auto-fill, minmax(220px, 1fr))",
+                      gap:16,
+                    }}>
+                      {mergedBooks.map((entry, i) => (
+                        <GroupBookCard key={`${entry.title}-${i}`} entry={entry} accent={accent} cardBg={cardBg}/>
+                      ))}
+                      {mergedBooks.length === 0 && (
+                        <p style={{ color:P.textDim, gridColumn:"1/-1", fontSize:15 }}>Noch keine Bücher in dieser Gruppe – fügt welche in euren Regalen hinzu.</p>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"24px", flexWrap:"wrap", gap:12 }}>
+                <div>
+                  <h1 style={{ fontSize:"28px", fontWeight:700, color:P.cream, marginBottom:"4px" }}>Gruppen</h1>
+                  <p style={{ fontSize:"14px", color:P.textMuted }}>Gemeinsame Bibliothek – alle Bücher der Mitglieder, Besitz auf einen Blick.</p>
+                </div>
+                <Btn accent={accent} onClick={()=>setShowCreate(true)}><Icon name="plus" size={14} color={P.brickDark}/> Neue Gruppe</Btn>
+              </div>
+
+              {loading ? (
+                <p style={{ color:P.textMuted }}>Lade Gruppen…</p>
+              ) : groups.length === 0 ? (
+                <div style={{ textAlign:"center", padding:40, color:P.textDim }}>
+                  <Ghost size={48} style={{ margin:"0 auto 16px" }}/>
+                  Noch keine Gruppe – lege eine an oder tritt einer bei, sobald es welche gibt.
+                </div>
+              ) : (
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:"14px" }}>
+                  {groups.map((g) => (
+                    <button
+                      key={g.id}
+                      type="button"
+                      onClick={()=>openDetail(g)}
+                      style={{
+                        textAlign:"left", cursor:"pointer", borderRadius:18, border:`1px solid ${P.cream}10`,
+                        background:P.surfaceDark, padding:22, fontFamily:"inherit", color:"inherit",
+                      }}
+                    >
+                      <h3 style={{ fontSize:17, fontWeight:700, color:P.cream, marginBottom:6 }}>{g.name}</h3>
+                      <p style={{ fontSize:12, color:P.textMuted, marginBottom:14, lineHeight:1.45, minHeight:36 }}>
+                        {g.description || "—"}
+                      </p>
+                      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                        <span style={{ fontSize:11, fontWeight:600, color:P.goldLight, background:`${P.goldLight}15`, padding:"4px 10px", borderRadius:8 }}>
+                          {g.memberCount} Mitglied{g.memberCount === 1 ? "" : "er"}
+                        </span>
+                        {g.isMember ? (
+                          <span style={{ fontSize:12, color:P.foliageLight, fontWeight:600 }}>Dabei</span>
+                        ) : (
+                          <span style={{ fontSize:12, color:P.textMuted }}>Öffnen / Beitreten</span>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {showCreate && (
+            <Modal onClose={()=>setShowCreate(false)} title="Neue Gruppe">
+              <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                <div>
+                  <label style={{ fontSize:12, color:P.textMuted, display:"block", marginBottom:6 }}>Name</label>
+                  <input style={inputStyle} placeholder="z.B. Fantasy Fans" value={newName} onChange={e=>setNewName(e.target.value)}/>
+                </div>
+                <div>
+                  <label style={{ fontSize:12, color:P.textMuted, display:"block", marginBottom:6 }}>Beschreibung</label>
+                  <input style={inputStyle} placeholder="Worum geht es?" value={newDesc} onChange={e=>setNewDesc(e.target.value)}/>
+                </div>
+                <Btn accent={accent} onClick={createGroup}>Erstellen</Btn>
+              </div>
+            </Modal>
+          )}
+        </div>
+      );
+    }
+
+    function MainApp({ sb }) {
+      const [page, setPage] = useState("profile");
+      const [themeKey, setThemeKey] = useState(() => localStorage.getItem("sm_theme") || "terracotta");
+      useEffect(() => { localStorage.setItem("sm_theme", themeKey); }, [themeKey]);
+      const theme = THEMES[themeKey];
+      const [session, setSession] = useState(null);
+      const [profile, setProfile] = useState(null);
+      const [books, setBooks] = useState([]);
+      const [borrowedItems, setBorrowedItems] = useState([]);
+      const [lendTargetBook, setLendTargetBook] = useState(null);
+      const [friends, setFriends] = useState([]);
+      const [discover, setDiscover] = useState([]);
+      const [friendships, setFriendships] = useState([]);
+      const [incoming, setIncoming] = useState([]);
+      const [outgoing, setOutgoing] = useState([]);
+      const [loadingApp, setLoadingApp] = useState(true);
+      const [showAddBook, setShowAddBook] = useState(false);
+      const [toastMsg, setToastMsg] = useState(null);
+
+      const toast = useCallback((msg) => {
+        setToastMsg(msg); setTimeout(()=>setToastMsg(null), 3200);
+      }, []);
+
+      const loadAll = useCallback(async (sid) => {
+        if (!sid) return;
+        try {
+          const { data: prof, error: pe } = await sb.from("profiles").select("*").eq("id", sid).maybeSingle();
+          if (pe) { toast(pe.message); return; }
+          if (!prof) {
+            toast("Kein Profil gefunden. In Supabase SQL Editor supabase/schema.sql ausführen und neu registrieren.");
+            return;
+          }
+          setProfile(prof);
+
+          const { data: myBooks, error: be } = await sb.from("books").select("*").eq("user_id", sid).order("created_at", { ascending: false });
+          if (be) toast(be.message);
+          else {
+            const { data: asLender } = await sb.from("book_loans").select("*").eq("lender_id", sid).eq("status", "active");
+            const borrowerIds = [...new Set((asLender||[]).map((x)=>x.borrower_id))];
+            const { data: bprofsL } = borrowerIds.length ? await sb.from("profiles").select("*").in("id", borrowerIds) : { data: [] };
+            const bpL = Object.fromEntries((bprofsL||[]).map((p)=>[p.id, p]));
+            const loanOutByBook = {};
+            (asLender||[]).forEach((l) => { loanOutByBook[l.book_id] = { loanId: l.id, borrower: bpL[l.borrower_id] }; });
+            setBooks((myBooks || []).map((b)=>({ ...b, loanOut: loanOutByBook[b.id] || null })));
+          }
+
+          const { data: asBorrower } = await sb.from("book_loans").select("*").eq("borrower_id", sid).eq("status", "active");
+          const brBookIds = (asBorrower||[]).map((l)=>l.book_id);
+          const lenderIdsBR = [...new Set((asBorrower||[]).map((l)=>l.lender_id))];
+          const { data: brBooksRows } = brBookIds.length ? await sb.from("books").select("*").in("id", brBookIds) : { data: [] };
+          const { data: lprofsBR } = lenderIdsBR.length ? await sb.from("profiles").select("*").in("id", lenderIdsBR) : { data: [] };
+          const lm = Object.fromEntries((lprofsBR||[]).map((p)=>[p.id, p]));
+          const brById = Object.fromEntries((brBooksRows||[]).map((b)=>[b.id, b]));
+          setBorrowedItems((asBorrower||[]).map((l)=>({
+            loanId: l.id,
+            book: brById[l.book_id],
+            lender: lm[l.lender_id],
+          })).filter((x)=>x.book && x.lender));
+
+          const { data: allFr, error: fe } = await sb.from("friendships").select("*").or(`requester_id.eq.${sid},addressee_id.eq.${sid}`);
+          if (fe) toast(fe.message);
+          const frRows = allFr || [];
+          setFriendships(frRows);
+
+          const acceptedIds = [];
+          frRows.filter(f=>f.status==="accepted").forEach(f=>{
+            if (f.requester_id===sid) acceptedIds.push(f.addressee_id);
+            else acceptedIds.push(f.requester_id);
+          });
+
+          const inc = [];
+          const out = [];
+          frRows.forEach(f=>{
+            if (f.status !== "pending") return;
+            if (f.addressee_id===sid) inc.push({ ...f, requester: null });
+            else if (f.requester_id===sid) out.push(f);
+          });
+          const needIds = inc.map(r=>r.requester_id).filter(Boolean);
+          const { data: reqs } = needIds.length ? await sb.from("profiles").select("*").in("id", needIds) : { data: [] };
+          const rqMap = {};
+          (reqs||[]).forEach(r=>{ rqMap[r.id]=r; });
+          setIncoming(inc.map(r=>({ ...r, requester: rqMap[r.requester_id] })).filter(r=>r.requester));
+          setOutgoing(out);
+
+          let friendProfiles = [];
+          if (acceptedIds.length) {
+            const { data: fps } = await sb.from("profiles").select("*").in("id", acceptedIds);
+            friendProfiles = fps || [];
+          }
+          setFriends(friendProfiles);
+
+          const { data: allP } = await sb.from("profiles").select("*").neq("id", sid);
+          setDiscover(allP||[]);
+        } finally {
+          setLoadingApp(false);
+        }
+      }, [sb, toast]);
+
+      useEffect(() => {
+        sb.auth.getSession().then(({ data: { session: s } }) => {
+          setSession(s); if (!s) setLoadingApp(false);
+        });
+        const { data: { subscription } } = sb.auth.onAuthStateChange((_e, s) => setSession(s));
+        return () => subscription.unsubscribe();
+      }, [sb]);
+
+      useEffect(() => {
+        if (session?.user?.id) {
+          setLoadingApp(true);
+          loadAll(session.user.id);
+        } else {
+          setProfile(null);
+          setBooks([]);
+          setBorrowedItems([]);
+          setLendTargetBook(null);
+          setFriends([]);
+          setDiscover([]);
+          setFriendships([]);
+          setIncoming([]);
+          setOutgoing([]);
+          setLoadingApp(false);
+        }
+      }, [session?.user?.id, loadAll]);
+
+      const userObj = profileToUser(profile);
+      const friendCount = friends.length;
+
+      const addBookDb = async (b) => {
+        const uid = session.user.id;
+        const row = {
+          user_id: uid,
+          title: b.title,
+          author: b.author,
+          year: b.year ?? 0,
+          link: b.link || null,
+          cover_url: b.cover_url || null,
+          rating: null,
+        };
+        const { data, error } = await sb.from("books").insert(row).select().single();
+        if (error) { toast(error.message); return; }
+        setBooks(prev => [data, ...prev]);
+        toast(`${data.title} hinzugefügt`);
+      };
+
+      const updateBookRating = async (bookId, rating) => {
+        const uid = session.user.id;
+        const { error } = await sb.from("books").update({ rating }).eq("id", bookId).eq("user_id", uid);
+        if (error) toast(error.message);
+        else setBooks(prev => prev.map(x => x.id === bookId ? { ...x, rating } : x));
+      };
+
+      const returnLoan = async (loanId) => {
+        const { error } = await sb.from("book_loans").update({
+          status: "returned",
+          returned_at: new Date().toISOString(),
+        }).eq("id", loanId);
+        if (error) toast(error.message);
+        else {
+          toast("Leihe beendet.");
+          loadAll(session.user.id);
+        }
+      };
+
+      const removeBookDb = async (id) => {
+        const { data: act } = await sb.from("book_loans").select("id").eq("book_id", id).eq("status", "active").maybeSingle();
+        if (act) { toast("Buch ist verliehen – zuerst „Leihe beenden“."); return; }
+        const { error } = await sb.from("books").delete().eq("id", id);
+        if (error) toast(error.message);
+        else { setBooks(prev=>prev.filter(x=>x.id!==id)); toast("Buch entfernt"); }
+      };
+
+      const signOut = async () => { await sb.auth.signOut(); setPage("profile"); };
+
+      if (!session) {
+        if (loadingApp) return <div style={{ padding:40, textAlign:"center", color:P.cream }}>Lade…</div>;
+        return <AuthScreen sb={sb} onAuthed={()=>sb.auth.getSession().then(({ data:{ session:s } })=>setSession(s))}/>;
+      }
+
+      if (loadingApp || !userObj) {
+        return <div style={{ padding:40, textAlign:"center", color:P.cream }}>Lade Regal…</div>;
+      }
+
+      const navItems = [
+        { id:"profile", label:"Regal",   icon:"book" },
+        { id:"friends", label:"Freunde", icon:"users" },
+        { id:"groups",  label:"Gruppen", icon:"grid" },
+      ];
+
+      return (
+        <div style={{ fontFamily:"'Crimson Pro',Georgia,serif", background:P.bg, color:P.cream, minHeight:"100vh", position:"relative" }}>
+          <div style={{ position:"fixed", top:60, left:0, zIndex:0, opacity:0.4, pointerEvents:"none" }}><Vine side="left" height={200}/></div>
+          <div style={{ position:"fixed", top:100, right:0, zIndex:0, opacity:0.4, pointerEvents:"none" }}><Vine side="right" height={160}/></div>
+          <div style={{ position:"fixed", bottom:0, left:10, zIndex:0, opacity:0.3, pointerEvents:"none" }}><Vine side="left" height={140}/></div>
+
+          <nav style={{
+            display:"flex", alignItems:"center", justifyContent:"space-between",
+            padding:"0 28px", height:"56px",
+            background:`${P.surface}E8`, backdropFilter:"blur(16px)", WebkitBackdropFilter:"blur(16px)",
+            borderBottom:`1px solid ${P.cream}10`,
+            position:"sticky", top:0, zIndex:100,
+          }}>
+            <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+              <Ghost size={26}/>
+              <span style={{ fontSize:"18px", fontWeight:800, color:P.cream, letterSpacing:"-0.3px" }}>Shelfmade</span>
+            </div>
+            <div style={{ display:"flex", gap:"2px" }}>
+              {navItems.map(n=>(
+                <button key={n.id} type="button" onClick={()=>setPage(n.id)} style={{
+                  padding:"7px 16px", borderRadius:"10px",
+                  fontSize:"14px", fontWeight:page===n.id?700:400,
+                  color:page===n.id?P.cream:P.textMuted,
+                  background:page===n.id?`${P.cream}12`:"transparent",
+                  border:"none", cursor:"pointer", transition:"all 0.2s",
+                  fontFamily:"'Crimson Pro',Georgia,serif",
+                  display:"flex", alignItems:"center", gap:"6px",
+                }}>
+                  <Icon name={n.icon} size={15} color={page===n.id?P.cream:P.textMuted}/> {n.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <button type="button" onClick={signOut} style={{ background:"none", border:"none", color:P.textMuted, cursor:"pointer", fontSize:12, fontFamily:"inherit" }}>Abmelden</button>
+              <Avatar initials={userObj.initials} size={32} accent={theme.accent}/>
+            </div>
+          </nav>
+
+          <div style={{ position:"relative", zIndex:1 }}>
+            {page==="profile" && (
+              <ProfilePage
+                user={userObj}
+                books={books}
+                borrowedItems={borrowedItems}
+                friendCount={friendCount}
+                accent={theme.accent}
+                cardBg={theme.card}
+                onRemoveBook={removeBookDb}
+                onRateBook={updateBookRating}
+                onOpenAdd={()=>setShowAddBook(true)}
+                themeKey={themeKey}
+                onSetTheme={setThemeKey}
+                onReturnLoan={returnLoan}
+                onLendBook={(b)=>setLendTargetBook(b)}
+              />
+            )}
+            {page==="friends" && (
+              <FriendsPage accent={theme.accent} cardBg={theme.card} currentProfile={profile}
+                friends={friends} discover={discover} friendships={friendships} incoming={incoming} outgoing={outgoing}
+                onRefresh={()=>loadAll(session.user.id)} sb={sb} toast={toast}/>
+            )}
+            {page==="groups" && (
+              <GroupsPage
+                accent={theme.accent}
+                cardBg={theme.card}
+                sb={sb}
+                toast={toast}
+                currentUserId={session.user.id}
+                visible={page==="groups"}
+              />
+            )}
+          </div>
+
+          {showAddBook && <AddBookModal onClose={()=>setShowAddBook(false)} onAddBook={addBookDb} accent={theme.accent}/>}
+          {lendTargetBook && (
+            <LendBookModal
+              accent={theme.accent}
+              bookTitle={lendTargetBook.title}
+              friends={friends}
+              onClose={()=>setLendTargetBook(null)}
+              onPickFriend={async (friendId) => {
+                const { error } = await sb.from("book_loans").insert({
+                  book_id: lendTargetBook.id,
+                  lender_id: session.user.id,
+                  borrower_id: friendId,
+                  status: "active",
+                });
+                if (error) toast(error.message);
+                else {
+                  toast("Verliehen – bei deinem Freund erscheint es als geliehen.");
+                  setLendTargetBook(null);
+                  loadAll(session.user.id);
+                }
+              }}
+            />
+          )}
+          {toastMsg && <Toast message={toastMsg} accent={theme.accent}/>}
+
+          <div style={{ position:"fixed", bottom:12, right:16, zIndex:50, opacity:0.6, pointerEvents:"none", animation:"ghostFloat 3s ease-in-out infinite" }}>
+            <Ghost size={36}/>
+          </div>
+        </div>
+      );
+    }
+
+    function App() {
+      const sb = useMemo(() => createSb(), []);
+      if (!sb) return (
+        <div style={{ background:P.bg, minHeight:"100vh" }}>
+          <ConfigScreen/>
+        </div>
+      );
+      return <MainApp sb={sb}/>;
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App/>);
+  </script>
+</body>
+</html>
