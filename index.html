@@ -182,6 +182,8 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  <!-- Texterkennung im Browser für Buch-Cover (deu/eng); erster Aufruf lädt Daten (~10–40 MB möglich) -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 
   <script type="text/babel">
     /**
@@ -385,6 +387,170 @@
         variants.map(v => searchOpenLibrary(v, perVariantLimit).catch(() => []))
       );
       return mergeUniqueBookLists(results);
+    }
+
+    /** Buch-Cover kleiner berechnen: schnelleres OCR/Handy weniger Arbeitsspeicher */
+    async function shrinkImageBlobForOCR(blob, maxSide = 1280, quality = 0.88) {
+      return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+          URL.revokeObjectURL(url);
+          const nw = img.naturalWidth || img.width;
+          const nh = img.naturalHeight || img.height;
+          if (!nw || !nh) {
+            reject(new Error("Bildmaße sind nicht lesbar."));
+            return;
+          }
+          let w = nw, h = nh;
+          if (w > maxSide || h > maxSide) {
+            if (w >= h) {
+              h = Math.round((h * maxSide) / w);
+              w = maxSide;
+            } else {
+              w = Math.round((w * maxSide) / h);
+              h = maxSide;
+            }
+          }
+          const c = document.createElement("canvas");
+          c.width = w;
+          c.height = h;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(img, 0, 0, w, h);
+          c.toBlob(
+            (b) => {
+              if (b) resolve(b);
+              else reject(new Error("Bild konnte nicht vorbereitet werden."));
+            },
+            "image/jpeg",
+            quality
+          );
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error("Bild konnte nicht geöffnet werden."));
+        };
+        img.src = url;
+      });
+    }
+
+    /** Strich-/QR-Codes auf dem Bild (ISBN-EAN wenn vorhanden) – Chrome/Android oft verfügbar */
+    async function scanBarcodeISBNOnBlob(blob) {
+      if (typeof BarcodeDetector === "undefined") return null;
+      let bitmap = null;
+      try {
+        bitmap = await createImageBitmap(blob);
+        const detector = new BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a"] });
+        const codes = await detector.detect(bitmap);
+        for (const c of codes || []) {
+          const raw = String((c && c.rawValue) || "").replace(/[^\d]/g, "");
+          if (raw.length >= 13) {
+            const p = raw.slice(0, 13);
+            if (/^97[89]\d{10}$/.test(p)) return p;
+            if (/^978\d{10}$/.test(p)) return p;
+          }
+          const tenFromEan =
+            raw.length >= 13 && raw.startsWith("978") ? raw.slice(3, 12) + raw.charAt(12) : "";
+          if (/^\d{9}[\dX]$/i.test(tenFromEan)) return tenFromEan.toUpperCase();
+          /* ISBN-10 Prüfziffer kann X sein — Original ggf. alphanumerisch */
+          const a = String((c && c.rawValue) || "").replace(/[^\dX]/gi, "").toUpperCase();
+          if (/^\d{9}X$/.test(a)) return a;
+        }
+      } catch (_) {
+        /* Browser ohne BarcodeDetector / Fehler beim Lesen */
+      }
+      if (bitmap && bitmap.close) try { bitmap.close(); } catch (_) {}
+      return null;
+    }
+
+    function findISBNInDigitalText(txt) {
+      const d = String(txt || "").replace(/\D/g, "");
+      for (let i = 0; i + 13 <= d.length; i++) {
+        const s13 = d.slice(i, i + 13);
+        if (/^97[89]\d{10}$/.test(s13)) return s13;
+      }
+      for (let j = 0; j + 10 <= d.length; j++) {
+        const s10 = d.slice(j, j + 10).toUpperCase();
+        if (/^\d{9}[\dX]$/.test(s10)) return s10;
+      }
+      return null;
+    }
+
+    function bestTitleGuessFromOCR(txt) {
+      const lines = String(txt || "")
+        .split(/\r?\n/)
+        .map((l) => l.trim().replace(/\s+/g, " "))
+        .filter((l) => l.length >= 3);
+      lines.sort((a, b) => b.length - a.length);
+      const pick = lines.find((l) => {
+        const letters = (l.match(/[A-Za-zÄÖÜäöüßÀ-ſ]/g) || []).length;
+        return letters >= 3 && letters >= Math.floor(l.replace(/\s/g, "").length * 0.12);
+      });
+      return (pick || lines[0] || "").slice(0, 240).trim();
+    }
+
+    /**
+     * 1) Barcode/EAN wenn möglich
+     * 2) Tesseract-OCR deutsch+englisch
+     * 3) ISBN aus OCR oder Titel-Schätzung → Open Library
+     */
+    async function lookupBooksFromCoverPhoto(blob, onStatus) {
+      const say = typeof onStatus === "function" ? onStatus : () => {};
+
+      async function fetchByISBN(code) {
+        const c = String(code || "").replace(/[^\dX]/gi, "").toUpperCase();
+        if (c.length !== 13 && c.length !== 10) return [];
+        if (c.length === 10 && !/^\d{9}[\dX]$/.test(c)) return [];
+        if (c.length === 13 && !/^\d{13}$/.test(c)) return [];
+        return searchOpenLibrary(`isbn:${c}`, 18);
+      }
+
+      say("Strichcode wird geprüft…");
+      let isbn = await scanBarcodeISBNOnBlob(blob);
+      let ocrText = "";
+      let list = isbn ? await fetchByISBN(isbn) : [];
+
+      const Tess = typeof Tesseract !== "undefined" ? Tesseract : globalThis.Tesseract;
+
+      /* Nur wenn keine Treffer vom Barcode/ISBN-Web: OCR (lädt Tesseract beim ersten Aufruf) */
+      const needTesseract = !list.length;
+
+      const canOcr = Tess && typeof Tess.recognize === "function";
+
+      if (needTesseract && canOcr) {
+        say("Texterkennung startet … (läuft im Gerät; erster Aufruf kann länger dauern)");
+        const res = await Tess.recognize(blob, "deu+eng", {
+          logger(m) {
+            if (!m) return;
+            if (m.status === "recognizing text" && typeof m.progress === "number") {
+              say(`Cover-Text wird gelesen… ${Math.round(m.progress * 100)} %`);
+            }
+          },
+        });
+        const data = res && res.data;
+        ocrText = data && typeof data.text === "string" ? data.text : "";
+        const isbnFromOcr = findISBNInDigitalText(ocrText);
+        if (isbnFromOcr) {
+          isbn = isbnFromOcr;
+          const byIsbn = await fetchByISBN(isbnFromOcr);
+          if (byIsbn.length) list = byIsbn;
+        }
+        if (!list.length) {
+          const guess = bestTitleGuessFromOCR(ocrText);
+          if (guess.length >= 3) {
+            say(`Internet-Suche nach: „${guess.slice(0, 56)}…“`);
+            list = await searchOpenLibrarySmart(guess);
+          }
+        }
+      }
+
+      if (!canOcr && !list.length) {
+        throw new Error(
+          "Texterkennung (Tesseract) ist nicht geladen. Prüfen Sie das Netzwerk und laden Sie die Seite neu.",
+        );
+      }
+
+      return { list: mergeUniqueBookLists([list]), isbnUsed: isbn || null, ocrSnippet: (ocrText || "").slice(0, 520) };
     }
 
     function createSb() {
@@ -1015,14 +1181,35 @@
       const [suggestLoading, setSuggestLoading] = useState(false);
       const [suggestOpen, setSuggestOpen] = useState(false);
       const blurTimer = useRef(null);
+      const camInputCameraRef = useRef(null);
+      const camInputGalleryRef = useRef(null);
+      const cameraBlobUrlRef = useRef(null);
+
       const [scanning, setScanning] = useState(false);
-      const [scanResult, setScanResult] = useState(null);
       const [scanMiss, setScanMiss] = useState(false);
+      const [cameraPreviewUrl, setCameraPreviewUrl] = useState("");
+      const [cameraHits, setCameraHits] = useState([]);
+      const [cameraStatus, setCameraStatus] = useState("");
+      const [cameraErr, setCameraErr] = useState("");
+      const [cameraSnippet, setCameraSnippet] = useState("");
+
+      useEffect(() => {
+        return () => {
+          if (cameraBlobUrlRef.current) {
+            URL.revokeObjectURL(cameraBlobUrlRef.current);
+            cameraBlobUrlRef.current = null;
+          }
+        };
+      }, []);
 
       useEffect(() => {
         if (tab !== "search") {
           setSuggestions([]);
           setSuggestOpen(false);
+        }
+        if (tab === "camera") {
+          setCameraErr("");
+          setCameraStatus("");
         }
       }, [tab]);
 
@@ -1076,19 +1263,43 @@
         setSearchErr("");
       };
 
-      const handleScan = async () => {
-        setScanning(true);
-        setScanResult(null);
+      const releaseCameraPreview = () => {
+        if (cameraBlobUrlRef.current) {
+          URL.revokeObjectURL(cameraBlobUrlRef.current);
+          cameraBlobUrlRef.current = null;
+        }
+        setCameraPreviewUrl("");
+      };
+
+      const onCameraInputChange = async (ev) => {
+        const file = ev.target.files && ev.target.files[0];
+        ev.target.value = "";
+        if (!file) return;
+        const mimeOk = /^image\//i.test(String(file.type || ""));
+        const nameOk = /\.(jpe?g|png|webp|gif|heic|heif|bmp)$/i.test(String(file.name || ""));
+        if (!mimeOk && !nameOk) {
+          setCameraErr("Bitte ein Bild auswählen (Foto, PNG, WebP …).");
+          return;
+        }
+        setCameraErr("");
         setScanMiss(false);
-        await new Promise(r => setTimeout(r, 1900));
+        setCameraHits([]);
+        setCameraSnippet("");
+        setCameraStatus("");
+        releaseCameraPreview();
+        setScanning(true);
         try {
-          const seed = query.trim() || "novel";
-          const list = await searchOpenLibrarySmart(seed);
-          const pick = list.length ? list[Math.floor(Math.random() * Math.min(list.length, 12))] : null;
-          setScanResult(pick);
-          setScanMiss(!pick);
-        } catch {
-          setScanResult(null);
+          const jpegBlob = await shrinkImageBlobForOCR(file, 1360, 0.88);
+          const url = URL.createObjectURL(jpegBlob);
+          cameraBlobUrlRef.current = url;
+          setCameraPreviewUrl(url);
+          const { list: hits, ocrSnippet } = await lookupBooksFromCoverPhoto(jpegBlob, (msg) => setCameraStatus(msg));
+          setCameraSnippet(ocrSnippet || "");
+          setCameraHits(hits || []);
+          setScanMiss(!(hits && hits.length));
+          if (!(hits && hits.length)) setCameraStatus("Kein Buch gefunden — anderes Bild (näher, heller, Titel gerade ausrichten).");
+        } catch (x) {
+          setCameraErr(x.message || String(x));
           setScanMiss(true);
         } finally {
           setScanning(false);
@@ -1105,7 +1316,7 @@
       return (
         <Modal onClose={onClose} title="Buch hinzufügen">
           <div style={{ display:"flex", gap:"3px", padding:"3px", background:P.surfaceDark, borderRadius:"14px", marginBottom:"24px" }}>
-            {[{id:"search",label:"Suche",icon:"search"},{id:"camera",label:"Foto-Scan",icon:"camera"}].map(t=>(
+            {[{id:"search",label:"Suche",icon:"search"},{id:"camera",label:"Foto vom Buch",icon:"camera"}].map(t=>(
               <button key={t.id} type="button" onClick={()=>setTab(t.id)} style={{
                 flex:1, padding:"9px", borderRadius:"11px", fontSize:"13px", fontWeight:600,
                 background:tab===t.id?P.surface:"transparent",
@@ -1207,45 +1418,94 @@
           )}
 
           {tab==="camera" && (
-            <div style={{ textAlign:"center" }}>
-              <div role="button" tabIndex={0} onClick={handleScan} onKeyDown={e=>e.key==="Enter"&&handleScan()} style={{
-                width:"100%", height:"200px", borderRadius:"16px",
-                background:P.surfaceDark, border:`2px dashed ${P.cream}20`,
-                display:"flex", flexDirection:"column",
-                alignItems:"center", justifyContent:"center",
-                cursor:"pointer", transition:"all 0.2s",
-              }}>
-                {scanning ? (
-                  <>
-                    <Ghost size={44} style={{ marginBottom:"12px", animation:"ghostFloat 1.5s ease-in-out infinite" }}/>
-                    <div style={{ fontSize:"13px", color:P.textMuted }}>Geist analysiert das Buch…</div>
-                    <div style={{ width:"100px", height:"3px", background:P.brick, borderRadius:"2px", marginTop:"12px", overflow:"hidden" }}>
-                      <div style={{ width:"40%", height:"100%", background:P.goldLight, borderRadius:"2px", animation:"scanMove 1.5s ease-in-out infinite" }}/>
-                    </div>
-                  </>
-                ) : scanResult ? (
-                  <>
-                    {scanResult.cover_url && (
-                      <div style={{ marginBottom:12 }}><CoverThumb url={scanResult.cover_url} w={72} h={102}/></div>
-                    )}
-                    <Icon name="check" size={28} color={P.foliageLight}/>
-                    <div style={{ fontWeight:700, fontSize:"16px", marginTop:"10px", color:P.cream }}>{scanResult.title}</div>
-                    <div style={{ fontSize:"13px", color:P.textMuted }}>{scanResult.author}</div>
-                  </>
-                ) : (
-                  <>
-                    <Icon name="camera" size={32} color={P.textDim}/>
-                    <div style={{ color:P.textMuted, fontSize:"14px", marginTop:"10px" }}>Foto simulieren</div>
-                    <div style={{ color:P.textDim, fontSize:"12px", marginTop:"2px" }}>KI erkennt das Buch automatisch</div>
-                  </>
-                )}
+            <div>
+              <p style={{ fontSize:13, color:P.textMuted, lineHeight:1.55, marginBottom:14 }}>
+                Mach ein Foto von <strong style={{color:P.cream}}>Titelseite</strong>, <strong style={{color:P.cream}}>Rücken</strong>
+                {" "}oder dem <strong style={{color:P.cream}}>ISBN-Barcode</strong>. Strichcodes werden zuerst ausgewertet, sonst
+                {" "}<strong style={{color:P.cream}}>Texterkennung</strong> direkt im Browser (Tesseract) — beim ersten Mal kann das
+                länger dauern und Daten werden nachgeladen (WLAN empfohlen).
+              </p>
+              <input
+                ref={camInputCameraRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                style={{ display:"none" }}
+                onChange={onCameraInputChange}
+              />
+              <input
+                ref={camInputGalleryRef}
+                type="file"
+                accept="image/*"
+                style={{ display:"none" }}
+                onChange={onCameraInputChange}
+              />
+              <div style={{ display:"flex", flexWrap:"wrap", gap:10, justifyContent:"center", marginBottom:16 }}>
+                <Btn type="button" accent={accent} onClick={() => camInputCameraRef.current?.click()}>
+                  <Icon name="camera" size={14} color={P.brickDark}/> Kamera / Foto
+                </Btn>
+                <Btn type="button" variant="secondary" onClick={() => camInputGalleryRef.current?.click()}>Aus Galerie</Btn>
               </div>
-              {scanResult && (
-                <Btn accent={accent} onClick={()=>{ onAddBook(scanResult); onClose(); }} style={{ marginTop:"16px" }}>Hinzufügen</Btn>
-              )}
-              {!scanning && scanMiss && !scanResult && (
-                <p style={{ color:P.textDim, fontSize:13, marginTop:14 }}>Kein Vorschlag – Internet prüfen oder im Tab „Suche“ einen Titel eingeben, dann Foto erneut simulieren.</p>
-              )}
+
+              {cameraPreviewUrl ? (
+                <div style={{
+                  marginBottom:14, borderRadius:14, overflow:"hidden", border:`1px solid ${P.cream}15`,
+                  maxHeight:220, background:P.brickDark, display:"flex", alignItems:"center", justifyContent:"center",
+                }}>
+                  <img src={cameraPreviewUrl} alt="" style={{ maxWidth:"100%", maxHeight:220, objectFit:"contain", display:"block" }} />
+                </div>
+              ) : null}
+
+              {scanning ? (
+                <div style={{ textAlign:"center", padding:"18px 8px", borderRadius:14, background:P.surfaceDark, border:`1px solid ${P.cream}10` }}>
+                  <Ghost size={40} style={{ margin:"0 auto 12px", animation:"ghostFloat 1.8s ease-in-out infinite", display:"block" }}/>
+                  <div style={{ fontSize:13, color:P.textMuted }}>{cameraStatus || "Bild wird verarbeitet…"}</div>
+                  <div style={{ width:"120px", height:"3px", background:P.brick, borderRadius:"2px", margin:"14px auto 0", overflow:"hidden" }}>
+                    <div style={{ width:"45%", height:"100%", background:P.goldLight, borderRadius:"2px", animation:"scanMove 1.8s ease-in-out infinite" }}/>
+                  </div>
+                </div>
+              ) : cameraStatus ? (
+                <p style={{ fontSize:12, color:P.textMuted, marginBottom:10 }}>{cameraStatus}</p>
+              ) : null}
+
+              {cameraErr ? <p style={{ fontSize:13, color:"#e8a598", marginBottom:12 }}>{cameraErr}</p> : null}
+
+              {cameraSnippet && !scanning ? (
+                <details style={{ fontSize:12, color:P.textDim, marginBottom:12 }}>
+                  <summary style={{ cursor:"pointer", marginBottom:6 }}>Erkannter Text (Auszug)</summary>
+                  <pre style={{
+                    whiteSpace:"pre-wrap", wordBreak:"break-word", padding:12, borderRadius:12,
+                    background:P.surfaceDark, border:`1px solid ${P.cream}08`, maxHeight:120, overflow:"auto",
+                    fontFamily:"'Crimson Pro',Georgia,serif",
+                  }}>{cameraSnippet}</pre>
+                </details>
+              ) : null}
+
+              <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+                {(cameraHits || []).map((b, i)=>(
+                  <div key={`cam-${String(b.title)}-${i}`} className="sm-search-hit" style={{
+                    display:"flex", alignItems:"center", justifyContent:"space-between", gap:12,
+                    padding:"12px 14px", borderRadius:"14px", background:P.surfaceDark,
+                    border:`1px solid ${P.cream}10`,
+                  }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:12, minWidth:0, flex:1 }}>
+                      <CoverThumb url={b.cover_url} w={48} h={68}/>
+                      <div style={{ minWidth:0 }}>
+                        <div style={{ fontSize:"14px", fontWeight:700, color:P.cream }}>{b.title}</div>
+                        <div style={{ fontSize:"12px", color:P.textMuted }}>{b.author}{b.year ? ` · ${b.year}` : ""}</div>
+                      </div>
+                    </div>
+                    <Btn type="button" accent={accent} small onClick={()=>{ onAddBook(b); onClose(); }}>
+                      <Icon name="plus" size={13} color={P.brickDark}/> Hinzufügen
+                    </Btn>
+                  </div>
+                ))}
+              </div>
+              {!scanning && scanMiss && !cameraHits.length ? (
+                <p style={{ color:P.textDim, fontSize:13, marginTop:14 }}>
+                  Kein Treffer — Titel scharf und gut beleuchtet, oder im Tab „Suche“ eingeben.
+                </p>
+              ) : null}
             </div>
           )}
         </Modal>
