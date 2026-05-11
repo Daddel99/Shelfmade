@@ -196,8 +196,9 @@
         align-items: center;
       }
 
-      .sm-reco-refresh-btn {
-        width: 100%;
+      .sm-reco-carousel-wrap .sm-reco-refresh-btn {
+        width: auto;
+        align-self: center;
       }
     }
 
@@ -962,9 +963,25 @@
      * Stöber-Tipps: Autor·innen / Titel aus dem Regal, optional Genre-Filter,
      * Zusatz-Treffer über Open-Library-Subjects, dann nach Ähnlichkeit sortiert.
      */
+    /** Reihenfenster ohne Wiederholung solange möglich — für „Neu laden“ andere Autor·innen */
+    function rotateTakeFromAuthors(authorBooks, startAbs, take) {
+      const n = authorBooks.length;
+      if (!n || take <= 0) return [];
+      const t = Math.min(take, n);
+      const s = ((Math.floor(startAbs) % n) + n) % n;
+      const out = [];
+      for (let i = 0; i < t; i++) out.push(authorBooks[(s + i) % n]);
+      return out;
+    }
+
     async function fetchShelfRecommendations(ownedBooks, opts = {}) {
       const limit = opts.limit ?? 22;
       const maxAuthors = opts.maxAuthors ?? 6;
+      const refreshVariant =
+        opts.refreshVariant != null && opts.refreshVariant !== ""
+          ? Number(opts.refreshVariant)
+          : 0;
+      const rv = Number.isFinite(refreshVariant) ? refreshVariant : 0;
       const rule = opts.rule || "author_keyword";
       const subjectRaw = String(opts.subjectExtra || "").trim();
       const minYear =
@@ -994,18 +1011,22 @@
 
       if (rule === "title_keywords") {
         const seenKw = new Set();
-        const kws = [];
-        const titlePool = (ownedBooks || []).slice(0, 40);
+        const kwsPool = [];
+        const titlePool = (ownedBooks || []).slice(0, 52);
         for (const b of titlePool) {
           const kw = titleDiscoveryKeyword(b.title);
           if (!kw) continue;
           const low = kw.toLowerCase();
           if (seenKw.has(low)) continue;
           seenKw.add(low);
-          kws.push(kw);
-          if (kws.length >= 8) break;
+          kwsPool.push(kw);
+          if (kwsPool.length >= 14) break;
         }
-        if (!kws.length) return [];
+        if (!kwsPool.length) return [];
+        const want = Math.min(8, kwsPool.length);
+        const base = [...kwsPool];
+        const rot = base.length <= want ? base : [...base.slice(rv % base.length), ...base.slice(0, rv % base.length)];
+        const kws = rot.slice(0, want);
         lists = await Promise.all(
           kws.map((kw) =>
             searchOpenLibrary(withSubject(kw), 13).catch(() => [])
@@ -1013,20 +1034,26 @@
         );
       } else {
         if (!pool.length) return [];
-        const seeds = [];
+        const orderedDistinct = [];
         const seenAuth = new Set();
-        for (const b of pool.slice(0, 28)) {
+        for (const b of ownedBooks || []) {
+          if (!primaryAuthorFromBookAuthor(b.author)) continue;
           const au = primaryAuthorFromBookAuthor(b.author);
           const k = au.toLowerCase();
           if (!au || seenAuth.has(k)) continue;
           seenAuth.add(k);
-          seeds.push(b);
-          if (seeds.length >= maxAuthors) break;
+          orderedDistinct.push(b);
+          if (orderedDistinct.length >= 40) break;
         }
-        if (!seeds.length) return [];
+        const startOff = orderedDistinct.length ? rv % orderedDistinct.length : 0;
+        let seedBooks = rotateTakeFromAuthors(orderedDistinct, startOff, maxAuthors);
+        if (!seedBooks.length && orderedDistinct.length) {
+          seedBooks = rotateTakeFromAuthors(orderedDistinct, 0, Math.min(maxAuthors, orderedDistinct.length));
+        }
+        if (!seedBooks.length) return [];
 
         lists = await Promise.all(
-          seeds.map(async (b) => {
+          seedBooks.map(async (b) => {
             const au = primaryAuthorFromBookAuthor(b.author);
             const kw = titleDiscoveryKeyword(b.title);
             try {
@@ -1065,7 +1092,12 @@
         !recoCandidateAlreadyOnShelf(x, shelfOwnedTitleIndex, ownedKeys, ownedWorkKeys));
       out = out.filter((x) => primaryAuthorFromBookAuthor(x.author));
       out = rankRecoByShelfAffinity(out, shelfAuthorLc, ownedTitleKeywordsLc);
-      return out.slice(0, limit);
+      let ranked = out;
+      if (ranked.length > limit) {
+        const hop = rv % Math.max(1, Math.min(Math.floor(ranked.length / 3), Math.max(limit, 10)));
+        ranked = [...ranked.slice(hop), ...ranked.slice(0, hop)];
+      }
+      return ranked.slice(0, limit);
     }
 
     /** Buch-Cover kleiner berechnen: schnelleres OCR/Handy weniger Arbeitsspeicher */
@@ -2306,6 +2338,7 @@
               rule: recoRule,
               subjectExtra: recoGenreSubject,
               minYear: recoMinYearStr.replace(/\D/g, "").slice(0, 4),
+              refreshVariant: recoRefreshNonce,
             });
             if (!cancelled) setRecoBooks(list);
           } catch (e) {
@@ -2496,25 +2529,12 @@
           {books.length > 0 && (
             <div style={{ marginBottom:"28px" }}>
               <div style={{ marginBottom:"10px" }}>
-                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, flexWrap:"wrap" }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:"8px", minHeight:44 }}>
-                    <Icon name="search" size={17} color={P.goldLight}/>
-                    <span style={{ fontSize:"20px", fontWeight:700, color:P.foliageLight }}>Zum Stöbern</span>
-                  </div>
-                  <Btn
-                    variant="secondary"
-                    small
-                    className="sm-reco-refresh-btn"
-                    disabled={recoLoading}
-                    onClick={() => setRecoRefreshNonce((n) => n + 1)}
-                    style={{ minHeight:44, alignItems:"center", gap:8 }}
-                  >
-                    <Icon name="refresh" size={15} color={P.cream}/>
-                    Neu laden
-                  </Btn>
+                <div style={{ display:"flex", alignItems:"center", gap:"8px", minHeight:44 }}>
+                  <Icon name="search" size={17} color={P.goldLight}/>
+                  <span style={{ fontSize:"20px", fontWeight:700, color:P.foliageLight }}>Zum Stöbern</span>
                 </div>
                 <p style={{ fontSize:12, color:P.textMuted, marginTop:"6px", lineHeight:1.5 }}>
-                  Vorschläge nutzen Open Library · sehr wahrscheinlich gleiche Bücher wie im eigenen Regal werden ausgeschlossen (auch bei anderem Titelwortlaut oder Sprache). Genre-Chips sind zuerst eingeklappt — mit „Genre & Themen wählen“ aufklappen. Ohne Genre nutzt Shelfmade nur das Autor·innen-/Titel-Radar.
+                  Vorschläge nutzen Open Library · sehr wahrscheinlich gleiche Bücher wie im eigenen Regal werden ausgeschlossen (auch bei anderem Titelwortlaut oder Sprache). Rechts neben der Buchleiste: <strong style={{ color:P.cream }}>Neue Tipps</strong> lädt eine <strong style={{ color:P.cream }}>andere Rotation</strong> aus deinen Autor·innen und Stichwörtern (ohne hochscrollen). Genre-Chips: „Genre & Themen wählen“.
                 </p>
                 {sb && booksMissingOlWorkKey.length > 0 ? (
                   <div style={{ marginTop:12, padding:"12px 14px", borderRadius:14, background:`${P.cream}08`, border:`1px solid ${P.cream}12` }}>
@@ -2680,6 +2700,17 @@
               {recoErr ? (
                 <p style={{ fontSize:13, color:"#d4a090", margin:"8px 0 0" }}>{recoErr}</p>
               ) : null}
+              <div
+                className="sm-reco-carousel-wrap"
+                style={{
+                  display:"flex",
+                  flexDirection:"row",
+                  alignItems:"stretch",
+                  gap:12,
+                  marginTop: recoErr ? 8 : 0,
+                }}
+              >
+                <div style={{ flex:1, minWidth:0 }}>
               {recoLoading ? (
                 <div style={{ display:"flex", gap:12, overflowX:"auto", WebkitOverflowScrolling:"touch", paddingBottom:6 }}>
                   {[1, 2, 3, 4].map((i) => (
@@ -2692,7 +2723,7 @@
                   ))}
                 </div>
               ) : recoBooks.length === 0 ? (
-                <p style={{ fontSize:13, color:P.textDim, marginTop:8 }}>Keine zusätzlichen Treffer gefunden — mit mehr Büchern kommen oft neue Ideen.</p>
+                <p style={{ fontSize:13, color:P.textDim, padding:"8px 0" }}>Keine zusätzlichen Treffer gefunden — mit mehr Büchern kommen oft neue Ideen.</p>
               ) : (
                 <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch", paddingBottom:6 }}>
                   <div style={{ display:"flex", gap:14, padding:"4px 2px", minWidth:"min-content" }}>
@@ -2767,6 +2798,34 @@
                   </div>
                 </div>
               )}
+                </div>
+                <div style={{ flexShrink:0, alignSelf:"stretch", display:"flex", alignItems:"center", justifyContent:"center", paddingBottom:6 }}>
+                  <Btn
+                    variant="secondary"
+                    small
+                    className="sm-reco-refresh-btn"
+                    disabled={recoLoading}
+                    title="Andere Autor·innen-Stichwörter und Reihenfolge — neue Vorschläge"
+                    onClick={() => setRecoRefreshNonce((n) => n + 1)}
+                    style={{
+                      minHeight:48,
+                      minWidth:104,
+                      maxWidth:120,
+                      flexDirection:"column",
+                      alignItems:"center",
+                      justifyContent:"center",
+                      gap:6,
+                      padding:"10px 10px",
+                      whiteSpace:"normal",
+                      lineHeight:1.2,
+                      textAlign:"center",
+                    }}
+                  >
+                    <Icon name="refresh" size={16} color={P.cream}/>
+                    <span style={{ fontSize:12, fontWeight:700 }}>Neue<br/>Tipps</span>
+                  </Btn>
+                </div>
+              </div>
 
               {shelfUserId && merkliste.length > 0 && (
                 <div style={{
