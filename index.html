@@ -1457,6 +1457,8 @@
         trash:   <><polyline points="3 6 5 6 21 6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" stroke={color} strokeWidth="1.8" fill="none"/><path d="M10 11v6M14 11v6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round"/></>,
         star:    <><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" stroke={color} strokeWidth="1.65" strokeLinejoin="round" fill="none"/></>,
         refresh: <><path d="M21 2v6h-6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/><path d="M3.05 13A9 9 0 1020.94 9" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/><path d="M1 22v-6h6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/></>,
+        eye:     <><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" stroke={color} strokeWidth="1.8" fill="none" strokeLinejoin="round"/><circle cx="12" cy="12" r="3" stroke={color} strokeWidth="1.8" fill="none"/></>,
+        eyeOff:  <><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/><line x1="1" y1="1" x2="23" y2="23" stroke={color} strokeWidth="1.8" strokeLinecap="round"/></>,
       };
       return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" style={{ display:"block", flexShrink:0 }}>{icons[name]}</svg>;
     }
@@ -1580,6 +1582,7 @@
       const [mode, setMode] = useState("login");
       const [email, setEmail] = useState("");
       const [password, setPassword] = useState("");
+      const [showPassword, setShowPassword] = useState(false);
       const [displayName, setDisplayName] = useState("");
       const [err, setErr] = useState("");
       const [busy, setBusy] = useState(false);
@@ -1647,8 +1650,43 @@
             <input style={input} type="email" required placeholder="E-Mail" autoComplete="email"
               value={email} onChange={e=>setEmail(e.target.value)}/>
             {(mode === "login" || mode === "signup") && (
-              <input style={input} type="password" required placeholder="Passwort" autoComplete={mode==="login"?"current-password":"new-password"}
-                value={password} onChange={e=>setPassword(e.target.value)}/>
+              <div style={{ position:"relative", marginBottom:12 }}>
+                <input
+                  style={{ ...input, paddingRight:46, marginBottom:0 }}
+                  type={showPassword ? "text" : "password"}
+                  required
+                  placeholder="Passwort"
+                  autoComplete={mode==="login"?"current-password":"new-password"}
+                  value={password}
+                  onChange={e=>setPassword(e.target.value)}
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-label={showPassword ? "Passwort verbergen" : "Passwort anzeigen"}
+                  title={showPassword ? "Verbergen" : "Anzeigen"}
+                  onClick={() => setShowPassword((s) => !s)}
+                  style={{
+                    position:"absolute",
+                    right:4,
+                    top:"50%",
+                    transform:"translateY(-50%)",
+                    width:44,
+                    height:44,
+                    display:"flex",
+                    alignItems:"center",
+                    justifyContent:"center",
+                    border:"none",
+                    borderRadius:10,
+                    background:"transparent",
+                    cursor:"pointer",
+                    color:P.textMuted,
+                    WebkitTapHighlightColor:"transparent",
+                  }}
+                >
+                  <Icon name={showPassword ? "eyeOff" : "eye"} size={20} color={P.textMuted}/>
+                </button>
+              </div>
             )}
             {mode === "forgot" && !forgotSent && (
               <p style={{ fontSize:12, color:P.textMuted, marginBottom:12 }}>
@@ -1662,19 +1700,19 @@
           </form>
           )}
           {(mode === "login" || mode === "signup") && (
-          <button type="button" onClick={()=>{ setMode(mode==="login"?"signup":"login"); setErr(""); setForgotSent(false); }}
+          <button type="button" onClick={()=>{ setMode(mode==="login"?"signup":"login"); setErr(""); setForgotSent(false); setShowPassword(false); }}
             style={{ marginTop:16, background:"none", border:"none", color:P.goldLight, cursor:"pointer", width:"100%", fontFamily:"inherit", fontSize:14 }}>
             {mode === "login" ? "Noch kein Konto? Registrieren" : "Schon ein Konto? Anmelden"}
           </button>
           )}
           {mode === "login" && (
-          <button type="button" onClick={()=>{ setMode("forgot"); setErr(""); setForgotSent(false); }}
+          <button type="button" onClick={()=>{ setMode("forgot"); setErr(""); setForgotSent(false); setShowPassword(false); }}
             style={{ marginTop:10, background:"none", border:"none", color:P.textMuted, cursor:"pointer", width:"100%", fontFamily:"inherit", fontSize:13 }}>
             Passwort vergessen?
           </button>
           )}
           {(mode === "forgot") && (
-          <button type="button" onClick={()=>{ setMode("login"); setErr(""); setForgotSent(false); }}
+          <button type="button" onClick={()=>{ setMode("login"); setErr(""); setForgotSent(false); setShowPassword(false); }}
             style={{ marginTop:14, background:"none", border:"none", color:P.goldLight, cursor:"pointer", width:"100%", fontFamily:"inherit", fontSize:14 }}>
             ← Zurück zur Anmeldung
           </button>
@@ -1687,6 +1725,8 @@
     function PasswordRecoveryScreen({ sb, onDone, toast }) {
       const [pw, setPw] = useState("");
       const [pw2, setPw2] = useState("");
+      const [showPw, setShowPw] = useState(false);
+      const [showPw2, setShowPw2] = useState(false);
       const [err, setErr] = useState("");
       const [busy, setBusy] = useState(false);
       const inp = { width:"100%", padding:"12px 14px", borderRadius:"12px", border:`1.5px solid ${P.cream}20`,
@@ -1717,8 +1757,54 @@
             Gib ein neues Passwort ein (nach dem Reset-Link aus der E-Mail).
           </p>
           <form onSubmit={submit}>
-            <input style={inp} type="password" autoComplete="new-password" placeholder="Neues Passwort" value={pw} onChange={e=>setPw(e.target.value)}/>
-            <input style={inp} type="password" autoComplete="new-password" placeholder="Passwort wiederholen" value={pw2} onChange={e=>setPw2(e.target.value)}/>
+            <div style={{ position:"relative", marginBottom:12 }}>
+              <input
+                style={{ ...inp, paddingRight:46, marginBottom:0 }}
+                type={showPw ? "text" : "password"}
+                autoComplete="new-password"
+                placeholder="Neues Passwort"
+                value={pw}
+                onChange={e=>setPw(e.target.value)}
+              />
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-label={showPw ? "Passwort verbergen" : "Passwort anzeigen"}
+                title={showPw ? "Verbergen" : "Anzeigen"}
+                onClick={() => setShowPw((s) => !s)}
+                style={{
+                  position:"absolute", right:4, top:"50%", transform:"translateY(-50%)",
+                  width:44, height:44, display:"flex", alignItems:"center", justifyContent:"center",
+                  border:"none", borderRadius:10, background:"transparent", cursor:"pointer", WebkitTapHighlightColor:"transparent",
+                }}
+              >
+                <Icon name={showPw ? "eyeOff" : "eye"} size={20} color={P.textMuted}/>
+              </button>
+            </div>
+            <div style={{ position:"relative", marginBottom:12 }}>
+              <input
+                style={{ ...inp, paddingRight:46, marginBottom:0 }}
+                type={showPw2 ? "text" : "password"}
+                autoComplete="new-password"
+                placeholder="Passwort wiederholen"
+                value={pw2}
+                onChange={e=>setPw2(e.target.value)}
+              />
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-label={showPw2 ? "Wiederholung verbergen" : "Wiederholung anzeigen"}
+                title={showPw2 ? "Verbergen" : "Anzeigen"}
+                onClick={() => setShowPw2((s) => !s)}
+                style={{
+                  position:"absolute", right:4, top:"50%", transform:"translateY(-50%)",
+                  width:44, height:44, display:"flex", alignItems:"center", justifyContent:"center",
+                  border:"none", borderRadius:10, background:"transparent", cursor:"pointer", WebkitTapHighlightColor:"transparent",
+                }}
+              >
+                <Icon name={showPw2 ? "eyeOff" : "eye"} size={20} color={P.textMuted}/>
+              </button>
+            </div>
             {err && <p style={{ color:"#e88", fontSize:13, marginBottom:12 }}>{err}</p>}
             <Btn type="submit" accent={P.goldLight} disabled={busy} style={{ width:"100%", justifyContent:"center" }}>
               {busy ? "Speichern…" : "Passwort speichern"}
