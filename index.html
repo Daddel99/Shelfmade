@@ -389,6 +389,209 @@
       return mergeUniqueBookLists(results);
     }
 
+    function bookDiscoveryKey(b) {
+      return `${String(b.title || "").trim().toLowerCase()}|${String(b.author || "").trim().toLowerCase()}`;
+    }
+
+    const SHELF_RECO_RULES = [
+      { id: "author_keyword", label: "Autor·in + Titelstichwort", hint: "Nah bei deinem Regal — wie zuvor." },
+      { id: "author_only", label: "Nur Autor·in (breiter)", hint: "Alle Suchtreffer rund um dieselben Autor·innen." },
+      { id: "smart_wide", label: "Variantensuche", hint: "Tippfehler & abgekürzte Schreibweisen — mehr Treffer, etwas weniger genau." },
+      { id: "title_keywords", label: "Nur Titel-Stichwörter", hint: "Stichwörter aus deinen Buchtiteln quer durch die Bibliothek." },
+    ];
+
+    function merklisteStorageKey(userId) {
+      return `shelfmade_merkliste_${userId || "local"}`;
+    }
+
+    function loadMerkliste(userId) {
+      try {
+        const raw = localStorage.getItem(merklisteStorageKey(userId));
+        if (!raw) return [];
+        const j = JSON.parse(raw);
+        if (!Array.isArray(j)) return [];
+        return j.filter((x) => x && x.title);
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function saveMerkliste(userId, list) {
+      try {
+        const cap = Math.min(Math.max(list.length, 0), 200);
+        localStorage.setItem(merklisteStorageKey(userId), JSON.stringify(list.slice(0, cap)));
+      } catch (_) { /* quota */ }
+    }
+
+    function shelfRecoPrefsKey(userId, field) {
+      return `shelfmade_reco_${field}_${userId || "local"}`;
+    }
+
+    function readShelfRecoRule(userId) {
+      try {
+        const v = localStorage.getItem(shelfRecoPrefsKey(userId, "rule"));
+        if (v && SHELF_RECO_RULES.some((r) => r.id === v)) return v;
+      } catch (_) { /* */ }
+      return "author_keyword";
+    }
+
+    function writeShelfRecoRule(userId, rule) {
+      try {
+        localStorage.setItem(shelfRecoPrefsKey(userId, "rule"), rule);
+      } catch (_) { /* */ }
+    }
+
+    function readShelfRecoSubjectDraft(userId) {
+      try {
+        return localStorage.getItem(shelfRecoPrefsKey(userId, "subject")) || "";
+      } catch (_) {
+        return "";
+      }
+    }
+
+    function writeShelfRecoSubjectDraft(userId, draft) {
+      try {
+        localStorage.setItem(shelfRecoPrefsKey(userId, "subject"), draft);
+      } catch (_) { /* */ }
+    }
+
+    function readShelfRecoMinYear(userId) {
+      try {
+        const n = parseInt(localStorage.getItem(shelfRecoPrefsKey(userId, "min_year")) || "", 10);
+        if (Number.isFinite(n) && n > 800 && n < 2100) return String(n);
+      } catch (_) { /* */ }
+      return "";
+    }
+
+    function writeShelfRecoMinYear(userId, minYearStr) {
+      try {
+        if (minYearStr === "" || minYearStr == null)
+          localStorage.removeItem(shelfRecoPrefsKey(userId, "min_year"));
+        else localStorage.setItem(shelfRecoPrefsKey(userId, "min_year"), String(minYearStr));
+      } catch (_) { /* */ }
+    }
+
+    /** Erster Hauptautor (vor Komma/&), für Open-Library-Anfragen */
+    function primaryAuthorFromBookAuthor(authorField) {
+      const s = String(authorField || "").trim();
+      if (!s || /^unbekannt$/i.test(s)) return "";
+      return s.split(/[,;&]/)[0].trim().replace(/\s+(und|and)\s+.+$/i, "").trim();
+    }
+
+    /** Ein markantes Wort aus dem Titel (ohne sehr kurze Füllwörter) */
+    function titleDiscoveryKeyword(rawTitle) {
+      const stop = new Set(["der","die","das","den","dem","ein","eine","einer","the","a","an","von","und","zu","im","in","am","auf","bei","vol","band","buch"]);
+      const head = String(rawTitle || "").split(/[:\[(]/)[0];
+      const parts = head.trim().split(/\s+/).filter(Boolean);
+      for (const raw of parts) {
+        const w = raw.replace(/^[„"'«]+|[„"'».,!?;:]+$/g, "");
+        const letters = w.replace(/[^a-zA-ZÄÖÜäöüß0-9'-]/g, "");
+        const core = w.toLowerCase();
+        if (w.length >= 4 && letters.length >= 3 && !stop.has(core)) return w;
+      }
+      return "";
+    }
+
+    /**
+     * Stöber-Tipps: Anfragen nach Autor·in (+ optional Stichwort aus eigenem Titel),
+     * Treffer zusammenführen und Einträge entfernen, die schon im Regal stehen.
+     */
+    async function fetchShelfRecommendations(ownedBooks, opts = {}) {
+      const limit = opts.limit ?? 18;
+      const maxAuthors = opts.maxAuthors ?? 5;
+      const rule = opts.rule || "author_keyword";
+      const subjectRaw = String(opts.subjectExtra || "").trim();
+      const minYear =
+        opts.minYear != null && opts.minYear !== ""
+          ? parseInt(String(opts.minYear), 10)
+          : 0;
+      const minY = Number.isFinite(minYear) && minYear > 1000 ? minYear : 0;
+
+      const withSubject = (q) => {
+        const t = String(q || "").trim();
+        if (!subjectRaw) return t;
+        return `${t} ${subjectRaw}`.trim();
+      };
+
+      const afterYear = (rows) =>
+        minY <= 0
+          ? rows
+          : rows.filter((x) => typeof x.year === "number" && x.year > 0 && x.year >= minY);
+
+      const ownedKeys = new Set((ownedBooks || []).map(bookDiscoveryKey));
+      const pool = (ownedBooks || []).filter((b) => primaryAuthorFromBookAuthor(b.author));
+
+      let lists;
+
+      if (rule === "title_keywords") {
+        const seenKw = new Set();
+        const kws = [];
+        const titlePool = (ownedBooks || []).slice(0, 40);
+        for (const b of titlePool) {
+          const kw = titleDiscoveryKeyword(b.title);
+          if (!kw) continue;
+          const low = kw.toLowerCase();
+          if (seenKw.has(low)) continue;
+          seenKw.add(low);
+          kws.push(kw);
+          if (kws.length >= 8) break;
+        }
+        if (!kws.length) return [];
+        lists = await Promise.all(
+          kws.map((kw) =>
+            searchOpenLibrary(withSubject(kw), 13).catch(() => [])
+          )
+        );
+      } else {
+        if (!pool.length) return [];
+        const seeds = [];
+        const seenAuth = new Set();
+        for (const b of pool.slice(0, 28)) {
+          const au = primaryAuthorFromBookAuthor(b.author);
+          const k = au.toLowerCase();
+          if (!au || seenAuth.has(k)) continue;
+          seenAuth.add(k);
+          seeds.push(b);
+          if (seeds.length >= maxAuthors) break;
+        }
+        if (!seeds.length) return [];
+
+        lists = await Promise.all(
+          seeds.map(async (b) => {
+            const au = primaryAuthorFromBookAuthor(b.author);
+            const kw = titleDiscoveryKeyword(b.title);
+            try {
+              if (rule === "author_only") {
+                return await searchOpenLibrary(withSubject(au), 18);
+              }
+              if (rule === "smart_wide") {
+                const qBase = kw.length ? `${au} ${kw}` : au;
+                return await searchOpenLibrarySmart(withSubject(qBase)).catch(() =>
+                  searchOpenLibrary(withSubject(qBase), 14)
+                );
+              }
+              /* author_keyword (Standard) */
+              const q = kw.length ? `${au} ${kw}` : au;
+              let rows = await searchOpenLibrary(withSubject(q), 14);
+              if (rows.length < 7) {
+                const extra = await searchOpenLibrary(withSubject(au), 11).catch(() => []);
+                rows = mergeUniqueBookLists([rows, extra]);
+              }
+              return rows;
+            } catch {
+              return [];
+            }
+          })
+        );
+      }
+
+      let out = mergeUniqueBookLists(lists);
+      out = afterYear(out);
+      out = out.filter((x) => !ownedKeys.has(bookDiscoveryKey(x)));
+      out = out.filter((x) => primaryAuthorFromBookAuthor(x.author));
+      return out.slice(0, limit);
+    }
+
     /** Buch-Cover kleiner berechnen: schnelleres OCR/Handy weniger Arbeitsspeicher */
     async function shrinkImageBlobForOCR(blob, maxSide = 1280, quality = 0.88) {
       return new Promise((resolve, reject) => {
@@ -739,6 +942,7 @@
         chevron: <><polyline points="9 18 15 12 9 6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/></>,
         palette: <><circle cx="13.5" cy="6.5" r="2" fill={color} opacity="0.4"/><circle cx="17.5" cy="10.5" r="2" fill={color} opacity="0.4"/><circle cx="8.5" cy="7.5" r="2" fill={color} opacity="0.4"/><circle cx="6.5" cy="12" r="2" fill={color} opacity="0.4"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.04-.23-.29-.38-.63-.38-1.04 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-5.17-4.49-9-10-9z" stroke={color} strokeWidth="1.8" fill="none"/></>,
         trash:   <><polyline points="3 6 5 6 21 6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" stroke={color} strokeWidth="1.8" fill="none"/><path d="M10 11v6M14 11v6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round"/></>,
+        star:    <><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" stroke={color} strokeWidth="1.65" strokeLinejoin="round" fill="none"/></>,
       };
       return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" style={{ display:"block", flexShrink:0 }}>{icons[name]}</svg>;
     }
@@ -1512,7 +1716,145 @@
       );
     }
 
-    function ProfilePage({ user, books, borrowedItems, accent, cardBg, onRemoveBook, onRateBook, onOpenAdd, themeKey, onSetTheme, friendCount, onReturnLoan, onLendBook }) {
+    function ProfilePage({ user, books, borrowedItems, accent, cardBg, onRemoveBook, onRateBook, onOpenAdd, themeKey, onSetTheme, friendCount, onReturnLoan, onLendBook, onAddSuggestedBook, toast }) {
+      const shelfUserId = user && user.id;
+      const [recoBooks, setRecoBooks] = useState([]);
+      const [recoLoading, setRecoLoading] = useState(false);
+      const [recoErr, setRecoErr] = useState("");
+      const [recoAddingKey, setRecoAddingKey] = useState("");
+      const [merkliste, setMerkliste] = useState([]);
+      const [recoRule, setRecoRule] = useState("author_keyword");
+      const [recoSubjectDraft, setRecoSubjectDraft] = useState("");
+      const [recoSubjectExtra, setRecoSubjectExtra] = useState("");
+      const [recoMinYearStr, setRecoMinYearStr] = useState("");
+
+      const bookIdsSig = useMemo(() => [...books.map((b) => b.id)].sort((a, b) => String(a).localeCompare(String(b))).join(","), [books]);
+      const merkKeySet = useMemo(() => new Set(merkliste.map(bookDiscoveryKey)), [merkliste]);
+      const ruleHintLine = useMemo(() => SHELF_RECO_RULES.find((r) => r.id === recoRule)?.hint || "", [recoRule]);
+
+      useEffect(() => {
+        if (!shelfUserId) return;
+        setRecoRule(readShelfRecoRule(shelfUserId));
+        const d = readShelfRecoSubjectDraft(shelfUserId);
+        setRecoSubjectDraft(d);
+        setRecoSubjectExtra(d.trim());
+        setRecoMinYearStr(readShelfRecoMinYear(shelfUserId));
+      }, [shelfUserId]);
+
+      useEffect(() => {
+        if (!shelfUserId) {
+          setMerkliste([]);
+          return;
+        }
+        setMerkliste(loadMerkliste(shelfUserId));
+      }, [shelfUserId]);
+
+      useEffect(() => {
+        const t = setTimeout(() => {
+          const trimmed = recoSubjectDraft.trim();
+          setRecoSubjectExtra(trimmed);
+          if (shelfUserId) writeShelfRecoSubjectDraft(shelfUserId, recoSubjectDraft);
+        }, 480);
+        return () => clearTimeout(t);
+      }, [recoSubjectDraft, shelfUserId]);
+
+      useEffect(() => {
+        let cancelled = false;
+        const run = async () => {
+          if (!books || books.length === 0) {
+            setRecoBooks([]);
+            setRecoErr("");
+            setRecoLoading(false);
+            return;
+          }
+          setRecoLoading(true);
+          setRecoErr("");
+          try {
+            const list = await fetchShelfRecommendations(books, {
+              rule: recoRule,
+              subjectExtra: recoSubjectExtra,
+              minYear: recoMinYearStr.replace(/\D/g, "").slice(0, 4),
+            });
+            if (!cancelled) setRecoBooks(list);
+          } catch (e) {
+            const msg = (e && e.message) ? e.message : String(e);
+            if (!cancelled) {
+              setRecoErr(msg);
+              setRecoBooks([]);
+            }
+          } finally {
+            if (!cancelled) setRecoLoading(false);
+          }
+        };
+        run();
+        return () => { cancelled = true; };
+      }, [bookIdsSig, books.length, recoRule, recoSubjectExtra, recoMinYearStr]);
+
+      const setRecoRulePersist = (nextRule) => {
+        setRecoRule(nextRule);
+        if (shelfUserId) writeShelfRecoRule(shelfUserId, nextRule);
+      };
+
+      const toggleMerk = (bk) => {
+        if (!shelfUserId) return;
+        const k = bookDiscoveryKey(bk);
+        const had = merkKeySet.has(k);
+        setMerkliste((prev) => {
+          let next;
+          if (had) next = prev.filter((x) => bookDiscoveryKey(x) !== k);
+          else next = [...prev, {
+            title: bk.title,
+            author: bk.author,
+            year: typeof bk.year === "number" ? bk.year : 0,
+            link: bk.link || null,
+            cover_url: bk.cover_url || null,
+            merkedAt: new Date().toISOString(),
+          }];
+          saveMerkliste(shelfUserId, next);
+          return next;
+        });
+        if (toast) toast(had ? "Vom Merkzettel entfernt." : "Auf den Merkzettel gelegt.");
+      };
+
+      const removeMerkItem = (bk) => {
+        if (!shelfUserId) return;
+        const k = bookDiscoveryKey(bk);
+        setMerkliste((prev) => {
+          const next = prev.filter((x) => bookDiscoveryKey(x) !== k);
+          saveMerkliste(shelfUserId, next);
+          return next;
+        });
+      };
+
+      const addRecoBook = async (bk) => {
+        if (!onAddSuggestedBook) return;
+        const k = bookDiscoveryKey(bk);
+        setRecoAddingKey(k);
+        try {
+          const ok = await onAddSuggestedBook(bk);
+          if (ok !== false) {
+            setRecoBooks((prev) => prev.filter((r) => bookDiscoveryKey(r) !== k));
+            if (shelfUserId) {
+              setMerkliste((prev) => {
+                const next = prev.filter((x) => bookDiscoveryKey(x) !== k);
+                saveMerkliste(shelfUserId, next);
+                return next;
+              });
+            }
+          }
+        } finally {
+          setRecoAddingKey("");
+        }
+      };
+
+      const openRecoLink = (url) => {
+        if (!url) return;
+        try { window.open(url, "_blank", "noopener,noreferrer"); }
+        catch (e) {
+          if (toast) toast("Link konnte nicht geöffnet werden.");
+        }
+      };
+
       const ownCount = books.filter((b)=>!b.loanOut).length;
       const lentCount = books.filter((b)=>b.loanOut).length;
       return (
@@ -1577,6 +1919,237 @@
                   onLend={onLendBook}
                 />
               ))}
+            </div>
+          )}
+
+          {books.length > 0 && (
+            <div style={{ marginBottom:"28px" }}>
+              <div style={{ marginBottom:"10px" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+                  <Icon name="search" size={17} color={P.goldLight}/>
+                  <span style={{ fontSize:"20px", fontWeight:700, color:P.foliageLight }}>Zum Stöbern</span>
+                </div>
+                <p style={{ fontSize:12, color:P.textMuted, marginTop:"6px", lineHeight:1.5 }}>
+                  Vorschläge von Open Library — ohne Konto hier merken oder direkt ins Regal legen. Suchregeln und Motto-Schlagwort steuerst du unten (wird nur in diesem Browser gespeichert).
+                </p>
+              </div>
+
+              <div style={{
+                display:"grid",
+                gap:12,
+                marginBottom:14,
+                padding:"14px 16px",
+                borderRadius:"14px",
+                background:`${P.cream}06`,
+                border:`1px solid ${P.cream}10`,
+              }}>
+                <label style={{ display:"flex", flexDirection:"column", gap:6, fontSize:12, color:P.textMuted }}>
+                  <span style={{ fontWeight:700, color:P.cream, fontSize:13 }}>Suchregel</span>
+                  <select
+                    value={recoRule}
+                    onChange={(e) => setRecoRulePersist(e.target.value)}
+                    style={{
+                      padding:"10px 12px", borderRadius:12,
+                      border:`1px solid ${P.cream}22`,
+                      background:P.brickDark, color:P.cream,
+                      fontFamily:"inherit", fontSize:14,
+                    }}
+                  >
+                    {SHELF_RECO_RULES.map((r) => (
+                      <option key={r.id} value={r.id}>{r.label}</option>
+                    ))}
+                  </select>
+                  {ruleHintLine ? (
+                    <span style={{ fontSize:11, color:P.textDim, lineHeight:1.45 }}>{ruleHintLine}</span>
+                  ) : null}
+                </label>
+                <label style={{ display:"flex", flexDirection:"column", gap:6, fontSize:12, color:P.textMuted }}>
+                  <span style={{ fontWeight:700, color:P.cream, fontSize:13 }}>Zusätzliches Motto oder Thema (optional)</span>
+                  <input
+                    type="text"
+                    placeholder="z. B. Geschichte, Natur, Fantasy …"
+                    value={recoSubjectDraft}
+                    onChange={(e)=>setRecoSubjectDraft(e.target.value)}
+                    autoComplete="off"
+                    style={{
+                      padding:"10px 12px", borderRadius:12,
+                      border:`1px solid ${P.cream}22`,
+                      background:P.brickDark, color:P.cream,
+                      fontFamily:"inherit", fontSize:14,
+                    }}
+                  />
+                  <span style={{ fontSize:11, color:P.textDim }}>Wird an jede Open-Library-Suche angehängt — nach kurzer Pause neu geladen.</span>
+                </label>
+                <label style={{ display:"flex", flexDirection:"column", gap:6, fontSize:12, color:P.textMuted, maxWidth:220 }}>
+                  <span style={{ fontWeight:700, color:P.cream, fontSize:13 }}>Nur ab Erscheinungsjahr (optional)</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="z. B. 1990"
+                    value={recoMinYearStr}
+                    onChange={(e)=>{
+                      const v = e.target.value.replace(/\D/g, "").slice(0, 4);
+                      setRecoMinYearStr(v);
+                      if (shelfUserId) writeShelfRecoMinYear(shelfUserId, v);
+                    }}
+                    style={{
+                      padding:"10px 12px", borderRadius:12,
+                      border:`1px solid ${P.cream}22`,
+                      background:P.brickDark, color:P.cream,
+                      fontFamily:"inherit", fontSize:14,
+                    }}
+                  />
+                </label>
+              </div>
+
+              {recoErr ? (
+                <p style={{ fontSize:13, color:"#d4a090", margin:"8px 0 0" }}>{recoErr}</p>
+              ) : null}
+              {recoLoading ? (
+                <div style={{ display:"flex", gap:12, overflowX:"auto", WebkitOverflowScrolling:"touch", paddingBottom:6 }}>
+                  {[1, 2, 3, 4].map((i) => (
+                    <div key={i} style={{ flex:"0 0 auto", width:124, padding:"10px", borderRadius:14,
+                      background:P.surfaceDark, border:`1px solid ${P.cream}08` }}>
+                      <div style={{ height:140, borderRadius:8, background:`${P.cream}10`, marginBottom:8 }}/>
+                      <div style={{ height:10, borderRadius:4, background:`${P.cream}0c`, marginBottom:6 }}/>
+                      <div style={{ height:8, width:"70%", borderRadius:4, background:`${P.cream}08` }}/>
+                    </div>
+                  ))}
+                </div>
+              ) : recoBooks.length === 0 ? (
+                <p style={{ fontSize:13, color:P.textDim, marginTop:8 }}>Keine zusätzlichen Treffer gefunden — mit mehr Büchern kommen oft neue Ideen.</p>
+              ) : (
+                <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch", paddingBottom:6 }}>
+                  <div style={{ display:"flex", gap:14, padding:"4px 2px", minWidth:"min-content" }}>
+                    {recoBooks.map((rb) => {
+                      const dk = bookDiscoveryKey(rb);
+                      const adding = recoAddingKey === dk;
+                      return (
+                        <div key={dk} style={{
+                          flex:"0 0 auto", width:128,
+                          padding:"10px 10px 12px",
+                          borderRadius:"16px",
+                          background:P.surfaceDark,
+                          border:`1px solid ${P.cream}10`,
+                          display:"flex",
+                          flexDirection:"column",
+                          gap:8,
+                          boxSizing:"border-box",
+                        }}>
+                          <div style={{
+                            width:"100%",
+                            aspectRatio:"2/3",
+                            borderRadius:"10px",
+                            overflow:"hidden",
+                            background:`${P.cream}08`,
+                            display:"flex",
+                            alignItems:"center",
+                            justifyContent:"center",
+                          }}>
+                            {rb.cover_url ? (
+                              <img src={rb.cover_url} alt="" draggable={false} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
+                            ) : (
+                              <Icon name="book" size={36} color={P.textMuted}/>
+                            )}
+                          </div>
+                          <div style={{ minHeight:"2.8em", fontSize:"13px", fontWeight:700, color:P.cream,
+                            display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical", overflow:"hidden", lineHeight:1.35 }}>
+                            {rb.title}
+                          </div>
+                          <div style={{ fontSize:"11px", color:P.textMuted,
+                            overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{rb.author}</div>
+                          {typeof rb.year === "number" && rb.year > 0 ? (
+                            <div style={{ fontSize:"10px", color:P.textDim }}>{rb.year}</div>
+                          ) : null}
+                          <div style={{ display:"flex", flexDirection:"column", gap:6, marginTop:"auto", paddingTop:2 }}>
+                            <Btn
+                              variant="secondary"
+                              small
+                              disabled={!shelfUserId}
+                              onClick={() => toggleMerk(rb)}
+                              style={{ justifyContent:"center" }}
+                            >
+                              <Icon name="star" size={14} color={merkKeySet.has(dk) ? accent : P.cream}/>
+                              <span style={{ marginLeft:4 }}>{merkKeySet.has(dk) ? "Gemerkt" : "Merken"}</span>
+                            </Btn>
+                            <Btn accent={accent} small disabled={adding} onClick={() => addRecoBook(rb)}>
+                              {adding ? "…" : <>Ins Regal</>}
+                            </Btn>
+                            {rb.link ? (
+                              <button type="button" onClick={() => openRecoLink(rb.link)}
+                                style={{
+                                  fontSize:"11px", border:"none", background:"none",
+                                  color:P.textMuted, cursor:"pointer", textDecoration:"underline", padding:0, textAlign:"left",
+                                  fontFamily:"inherit",
+                                }}>
+                                Bei Open Library
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {shelfUserId && merkliste.length > 0 && (
+                <div style={{
+                  marginTop:18,
+                  padding:"16px 18px",
+                  borderRadius:"16px",
+                  background:`${P.cream}05`,
+                  border:`1px solid ${P.cream}12`,
+                }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+                    <Icon name="star" size={16} color={P.goldLight}/>
+                    <span style={{ fontSize:"16px", fontWeight:700, color:P.cream }}>Merkezettel</span>
+                    <span style={{ fontSize:12, color:P.textMuted }}>({merkliste.length})</span>
+                  </div>
+                  <p style={{ fontSize:11, color:P.textDim, marginBottom:12, lineHeight:1.5 }}>
+                    Nur auf diesem Gerät gespeichert — zum Einkaufen oder später ins Regal ziehen.
+                  </p>
+                  <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                    {merkliste.map((mb) => {
+                      const mk = bookDiscoveryKey(mb);
+                      const busyMerk = recoAddingKey === mk;
+                      return (
+                        <div key={mk} style={{
+                          display:"flex", alignItems:"center", gap:12,
+                          padding:"10px 12px", borderRadius:14,
+                          background:P.surfaceDark, border:`1px solid ${P.cream}10`,
+                        }}>
+                          <div style={{
+                            width:44, height:64, flexShrink:0, borderRadius:8, overflow:"hidden",
+                            background:`${P.cream}08`, display:"flex", alignItems:"center", justifyContent:"center",
+                          }}>
+                            {mb.cover_url ? (
+                              <img src={mb.cover_url} alt="" draggable={false} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
+                            ) : (
+                              <Icon name="book" size={22} color={P.textMuted}/>
+                            )}
+                          </div>
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ fontSize:14, fontWeight:700, color:P.cream, lineHeight:1.3,
+                              display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical", overflow:"hidden" }}>
+                              {mb.title}
+                            </div>
+                            <div style={{ fontSize:12, color:P.textMuted, marginTop:4, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                              {mb.author}{typeof mb.year === "number" && mb.year > 0 ? ` · ${mb.year}` : ""}
+                            </div>
+                          </div>
+                          <div style={{ display:"flex", flexDirection:"column", gap:6, flexShrink:0 }}>
+                            <Btn accent={accent} small disabled={busyMerk} onClick={() => addRecoBook(mb)}>
+                              {busyMerk ? "…" : "Ins Regal"}
+                            </Btn>
+                            <Btn variant="secondary" small onClick={() => removeMerkItem(mb)}>Entfernen</Btn>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -2385,9 +2958,10 @@
           rating: null,
         };
         const { data, error } = await sb.from("books").insert(row).select().single();
-        if (error) { toast(error.message); return; }
+        if (error) { toast(error.message); return false; }
         setBooks(prev => [data, ...prev]);
         toast(`${data.title} hinzugefügt`);
+        return true;
       };
 
       const updateBookRating = async (bookId, rating) => {
@@ -2586,6 +3160,8 @@
                 onSetTheme={setThemeKey}
                 onReturnLoan={returnLoan}
                 onLendBook={(b)=>setLendTargetBook(b)}
+                onAddSuggestedBook={addBookDb}
+                toast={toast}
               />
             )}
             {page==="friends" && (
