@@ -394,10 +394,28 @@
     }
 
     const SHELF_RECO_RULES = [
-      { id: "author_keyword", label: "Autor·in + Titelstichwort", hint: "Nah bei deinem Regal — wie zuvor." },
-      { id: "author_only", label: "Nur Autor·in (breiter)", hint: "Alle Suchtreffer rund um dieselben Autor·innen." },
-      { id: "smart_wide", label: "Variantensuche", hint: "Tippfehler & abgekürzte Schreibweisen — mehr Treffer, etwas weniger genau." },
-      { id: "title_keywords", label: "Nur Titel-Stichwörter", hint: "Stichwörter aus deinen Buchtiteln quer durch die Bibliothek." },
+      { id: "author_keyword", label: "Autor·in + Titelstichwort", hint: "Autor·innen aus deinem Regal plus Titelstichwort — mit Genre-Filter kombinierbar." },
+      { id: "author_only", label: "Nur Autor·in (breiter)", hint: "Alles von denselben Autor·innen; Genre zieht die Liste stärker in eine Richtung." },
+      { id: "smart_wide", label: "Variantensuche", hint: "Gleiche Logik wie oben, aber toleranter bei Schreibweisen." },
+      { id: "title_keywords", label: "Nur Titel-Stichwörter", hint: "Stichwörter aus deinen Titeln + optional Genre-Suche bei Open Library." },
+    ];
+
+    /** Große Genres (Open-Library-„subject“-Schreibweisen üblicherweise auf Englisch) — Anzeige auf Deutsch */
+    const RECO_MAJOR_GENRES = [
+      { slug: "all", labelDe: "Alle Genres", subject: "" },
+      { slug: "fiction", labelDe: "Romane & Fiction", subject: "Fiction" },
+      { slug: "history", labelDe: "Geschichte", subject: "History" },
+      { slug: "sf", labelDe: "Science-Fiction", subject: "Science fiction" },
+      { slug: "fantasy", labelDe: "Fantasy", subject: "Fantasy" },
+      { slug: "mystery", labelDe: "Krimi & Mystery", subject: "Mystery fiction" },
+      { slug: "romance", labelDe: "Romantik / Liebesromane", subject: "Romance" },
+      { slug: "biography", labelDe: "Biografien & Erinnerungen", subject: "Biography" },
+      { slug: "thriller", labelDe: "Thriller & Spannung", subject: "Thrillers (Fiction)" },
+      { slug: "horror", labelDe: "Horror", subject: "Horror tales" },
+      { slug: "ya", labelDe: "Young Adult", subject: "Young adult fiction" },
+      { slug: "children", labelDe: "Kinder- & Jugendbuch", subject: "Juvenile fiction" },
+      { slug: "poetry", labelDe: "Lyrik / Poesie", subject: "Poetry" },
+      { slug: "essays", labelDe: "Essays & Sachbuch allgemein", subject: "Essays" },
     ];
 
     function merklisteStorageKey(userId) {
@@ -441,17 +459,19 @@
       } catch (_) { /* */ }
     }
 
-    function readShelfRecoSubjectDraft(userId) {
+    function readShelfRecoGenreSubject(userId) {
       try {
-        return localStorage.getItem(shelfRecoPrefsKey(userId, "subject")) || "";
+        return localStorage.getItem(shelfRecoPrefsKey(userId, "genre_subject")) || "";
       } catch (_) {
         return "";
       }
     }
 
-    function writeShelfRecoSubjectDraft(userId, draft) {
+    function writeShelfRecoGenreSubject(userId, subjectTrimmed) {
       try {
-        localStorage.setItem(shelfRecoPrefsKey(userId, "subject"), draft);
+        const s = String(subjectTrimmed || "").trim();
+        if (!s) localStorage.removeItem(shelfRecoPrefsKey(userId, "genre_subject"));
+        else localStorage.setItem(shelfRecoPrefsKey(userId, "genre_subject"), s);
       } catch (_) { /* */ }
     }
 
@@ -492,13 +512,124 @@
       return "";
     }
 
+    /** Direkte Genre-/Subject-Suche bei Open Library (zusätzliche Treffer zum Autor·innen-Teil) */
+    async function fetchOpenLibraryGenreBranches(subjectLabel, limitEach = 14) {
+      const raw = String(subjectLabel || "").trim();
+      if (!raw) return [];
+      const safe = raw.replace(/"/g, "");
+      const [a, b] = await Promise.all([
+        searchOpenLibrary(`subject:"${safe}"`, limitEach).catch(() => []),
+        searchOpenLibrary(safe, Math.max(10, limitEach - 4)).catch(() => []),
+      ]);
+      return [a, b];
+    }
+
+    /** Für Ranking: Autor·innen-Stimmen + Titelstichwörter aus dem eigenen Regal */
+    function shelfRecoAffinityContext(ownedBooks) {
+      const shelfAuthorLc = new Set();
+      const ownedTitleKeywordsLc = new Set();
+      for (const b of ownedBooks || []) {
+        const pa = primaryAuthorFromBookAuthor(b.author);
+        if (pa) shelfAuthorLc.add(pa.toLowerCase().trim());
+        const k = titleDiscoveryKeyword(b.title);
+        if (k.length >= 4) ownedTitleKeywordsLc.add(k.toLowerCase());
+      }
+      return { shelfAuthorLc, ownedTitleKeywordsLc };
+    }
+
+    function rankRecoByShelfAffinity(rows, shelfAuthorLc, ownedTitleKeywordsLc) {
+      const authorsArr = [...shelfAuthorLc];
+      const scoreOf = (bk) => {
+        let s = 0;
+        const pa = primaryAuthorFromBookAuthor(bk.author).toLowerCase().trim();
+        if (!pa) return -1e6;
+        if (shelfAuthorLc.has(pa)) s += 220;
+        else {
+          for (const sa of authorsArr) {
+            if (sa.length < 3) continue;
+            if (pa === sa || pa.includes(sa) || sa.includes(pa)) {
+              s += 120;
+              break;
+            }
+          }
+        }
+        const titleLow = String(bk.title || "").toLowerCase();
+        for (const kw of ownedTitleKeywordsLc) {
+          if (kw.length >= 4 && titleLow.includes(kw)) {
+            s += 28;
+            break;
+          }
+        }
+        const y = typeof bk.year === "number" ? bk.year : 0;
+        if (y > 0) s += Math.min(24, Math.floor(y / 85));
+        return s;
+      };
+      return [...rows].sort((a, b) => scoreOf(b) - scoreOf(a));
+    }
+
     /**
-     * Stöber-Tipps: Anfragen nach Autor·in (+ optional Stichwort aus eigenem Titel),
-     * Treffer zusammenführen und Einträge entfernen, die schon im Regal stehen.
+     * Themen / Genres aus deinen Büchern schätzen (Top-Treffer zu Autor·in+Titel bei Open Library).
+     */
+    async function inferShelfSubjectsFromOpenLibrary(ownedBooks, { maxLookups = 12, signal } = {}) {
+      const pool = (ownedBooks || []).filter((b) => primaryAuthorFromBookAuthor(b.author)).slice(0, 32);
+      const counts = new Map();
+      const seenQuery = new Set();
+      let lookups = 0;
+      for (const b of pool) {
+        if (signal && signal.aborted) break;
+        if (lookups >= maxLookups) break;
+        const au = primaryAuthorFromBookAuthor(b.author);
+        const shortTitle = String(b.title || "").split(/[:\[(]/)[0].trim().slice(0, 58);
+        const q = `${au} ${shortTitle}`.trim();
+        const qk = q.toLowerCase();
+        if (seenQuery.has(qk)) continue;
+        seenQuery.add(qk);
+        lookups++;
+        try {
+          const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=2`;
+          const res = await fetch(url, signal ? { signal } : undefined);
+          if (!res.ok) continue;
+          const json = await res.json();
+          for (const doc of json.docs || []) {
+            let subs = doc.subject || [];
+            if (!Array.isArray(subs)) subs = [subs];
+            for (const raw of subs) {
+              const subj = String(raw || "").trim();
+              if (subj.length < 4 || subj.length > 72) continue;
+              const low = subj.toLowerCase();
+              if (
+                /(^|\b)(bibliography|catalog|large type|textbooks|study|problems|exercises|specimens)\b/i.test(subj) ||
+                low.includes("accessible book")
+              ) continue;
+              counts.set(subj, (counts.get(subj) || 0) + 1);
+            }
+          }
+        } catch { /* offline / CORS */ }
+      }
+      const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([s]) => s);
+      const majorLc = new Set(
+        RECO_MAJOR_GENRES.map((g) => g.subject.toLowerCase()).filter(Boolean)
+      );
+      const out = [];
+      const seenLower = new Set();
+      for (const s of sorted) {
+        const l = s.toLowerCase();
+        if (seenLower.has(l)) continue;
+        seenLower.add(l);
+        if (majorLc.has(l)) continue;
+        out.push(s);
+        if (out.length >= 8) break;
+      }
+      return out;
+    }
+
+    /**
+     * Stöber-Tipps: Autor·innen / Titel aus dem Regal, optional Genre-Filter,
+     * Zusatz-Treffer über Open-Library-Subjects, dann nach Ähnlichkeit sortiert.
      */
     async function fetchShelfRecommendations(ownedBooks, opts = {}) {
-      const limit = opts.limit ?? 18;
-      const maxAuthors = opts.maxAuthors ?? 5;
+      const limit = opts.limit ?? 22;
+      const maxAuthors = opts.maxAuthors ?? 6;
       const rule = opts.rule || "author_keyword";
       const subjectRaw = String(opts.subjectExtra || "").trim();
       const minYear =
@@ -520,8 +651,9 @@
 
       const ownedKeys = new Set((ownedBooks || []).map(bookDiscoveryKey));
       const pool = (ownedBooks || []).filter((b) => primaryAuthorFromBookAuthor(b.author));
+      const { shelfAuthorLc, ownedTitleKeywordsLc } = shelfRecoAffinityContext(ownedBooks);
 
-      let lists;
+      let lists = [];
 
       if (rule === "title_keywords") {
         const seenKw = new Set();
@@ -570,7 +702,6 @@
                   searchOpenLibrary(withSubject(qBase), 14)
                 );
               }
-              /* author_keyword (Standard) */
               const q = kw.length ? `${au} ${kw}` : au;
               let rows = await searchOpenLibrary(withSubject(q), 14);
               if (rows.length < 7) {
@@ -585,10 +716,16 @@
         );
       }
 
+      if (subjectRaw) {
+        const genParts = await fetchOpenLibraryGenreBranches(subjectRaw, 15);
+        for (const part of genParts) lists.push(part);
+      }
+
       let out = mergeUniqueBookLists(lists);
       out = afterYear(out);
       out = out.filter((x) => !ownedKeys.has(bookDiscoveryKey(x)));
       out = out.filter((x) => primaryAuthorFromBookAuthor(x.author));
+      out = rankRecoByShelfAffinity(out, shelfAuthorLc, ownedTitleKeywordsLc);
       return out.slice(0, limit);
     }
 
@@ -1724,8 +1861,9 @@
       const [recoAddingKey, setRecoAddingKey] = useState("");
       const [merkliste, setMerkliste] = useState([]);
       const [recoRule, setRecoRule] = useState("author_keyword");
-      const [recoSubjectDraft, setRecoSubjectDraft] = useState("");
-      const [recoSubjectExtra, setRecoSubjectExtra] = useState("");
+      const [recoGenreSubject, setRecoGenreSubject] = useState("");
+      const [inferredShelfGenres, setInferredShelfGenres] = useState([]);
+      const [inferGenreBusy, setInferGenreBusy] = useState(false);
       const [recoMinYearStr, setRecoMinYearStr] = useState("");
 
       const bookIdsSig = useMemo(() => [...books.map((b) => b.id)].sort((a, b) => String(a).localeCompare(String(b))).join(","), [books]);
@@ -1735,9 +1873,18 @@
       useEffect(() => {
         if (!shelfUserId) return;
         setRecoRule(readShelfRecoRule(shelfUserId));
-        const d = readShelfRecoSubjectDraft(shelfUserId);
-        setRecoSubjectDraft(d);
-        setRecoSubjectExtra(d.trim());
+        let gsub = readShelfRecoGenreSubject(shelfUserId);
+        try {
+          if (!gsub) {
+            const old = localStorage.getItem(shelfRecoPrefsKey(shelfUserId, "subject"));
+            if (old && String(old).trim()) {
+              gsub = String(old).trim();
+              writeShelfRecoGenreSubject(shelfUserId, gsub);
+              localStorage.removeItem(shelfRecoPrefsKey(shelfUserId, "subject"));
+            }
+          }
+        } catch (_) { /* */ }
+        setRecoGenreSubject(gsub ? String(gsub).trim() : "");
         setRecoMinYearStr(readShelfRecoMinYear(shelfUserId));
       }, [shelfUserId]);
 
@@ -1750,13 +1897,29 @@
       }, [shelfUserId]);
 
       useEffect(() => {
-        const t = setTimeout(() => {
-          const trimmed = recoSubjectDraft.trim();
-          setRecoSubjectExtra(trimmed);
-          if (shelfUserId) writeShelfRecoSubjectDraft(shelfUserId, recoSubjectDraft);
-        }, 480);
-        return () => clearTimeout(t);
-      }, [recoSubjectDraft, shelfUserId]);
+        const ac = new AbortController();
+        if (!books || books.length === 0) {
+          setInferredShelfGenres([]);
+          setInferGenreBusy(false);
+          return () => ac.abort();
+        }
+        let alive = true;
+        setInferGenreBusy(true);
+        inferShelfSubjectsFromOpenLibrary(books, { maxLookups: 12, signal: ac.signal })
+          .then((subjs) => {
+            if (alive) setInferredShelfGenres(subjs || []);
+          })
+          .catch(() => {
+            if (alive) setInferredShelfGenres([]);
+          })
+          .finally(() => {
+            if (alive) setInferGenreBusy(false);
+          });
+        return () => {
+          alive = false;
+          ac.abort();
+        };
+      }, [bookIdsSig, books.length]);
 
       useEffect(() => {
         let cancelled = false;
@@ -1772,7 +1935,7 @@
           try {
             const list = await fetchShelfRecommendations(books, {
               rule: recoRule,
-              subjectExtra: recoSubjectExtra,
+              subjectExtra: recoGenreSubject,
               minYear: recoMinYearStr.replace(/\D/g, "").slice(0, 4),
             });
             if (!cancelled) setRecoBooks(list);
@@ -1788,12 +1951,32 @@
         };
         run();
         return () => { cancelled = true; };
-      }, [bookIdsSig, books.length, recoRule, recoSubjectExtra, recoMinYearStr]);
+      }, [bookIdsSig, books.length, recoRule, recoGenreSubject, recoMinYearStr]);
 
       const setRecoRulePersist = (nextRule) => {
         setRecoRule(nextRule);
         if (shelfUserId) writeShelfRecoRule(shelfUserId, nextRule);
       };
+
+      const setRecoGenrePersist = (subjectStr) => {
+        const next = String(subjectStr || "").trim();
+        setRecoGenreSubject(next);
+        if (shelfUserId) writeShelfRecoGenreSubject(shelfUserId, next);
+      };
+
+      const recoGenreChipStyle = (active) => ({
+        padding:"7px 14px",
+        borderRadius:999,
+        fontSize:13,
+        fontWeight:600,
+        fontFamily:"inherit",
+        cursor:"pointer",
+        border:active ? `2px solid ${accent}` : `1px solid ${P.cream}28`,
+        background:active ? `${accent}2a` : P.brickDark,
+        color:active ? P.cream : P.textMuted,
+        transition:"border 0.15s, background 0.15s",
+        flexShrink:0,
+      });
 
       const toggleMerk = (bk) => {
         if (!shelfUserId) return;
@@ -1930,19 +2113,75 @@
                   <span style={{ fontSize:"20px", fontWeight:700, color:P.foliageLight }}>Zum Stöbern</span>
                 </div>
                 <p style={{ fontSize:12, color:P.textMuted, marginTop:"6px", lineHeight:1.5 }}>
-                  Vorschläge von Open Library — ohne Konto hier merken oder direkt ins Regal legen. Suchregeln und Motto-Schlagwort steuerst du unten (wird nur in diesem Browser gespeichert).
+                  Ähnliche Titel durch deine Autor·innen plus optionales Genre bei Open Library. Es wird automatisch gewichtet, was zu deinem Regal passt — du musst keine Stichwörter tippen. Einstellungen bleiben in diesem Browser.
                 </p>
               </div>
 
               <div style={{
                 display:"grid",
-                gap:12,
+                gap:14,
                 marginBottom:14,
                 padding:"14px 16px",
                 borderRadius:"14px",
                 background:`${P.cream}06`,
                 border:`1px solid ${P.cream}10`,
               }}>
+                <div>
+                  <div style={{ fontWeight:700, color:P.cream, fontSize:13, marginBottom:8 }}>Genre · einmal antippen</div>
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:8, alignItems:"center" }}>
+                    {RECO_MAJOR_GENRES.map((g) => {
+                      const active =
+                        g.slug === "all"
+                          ? !recoGenreSubject
+                          : g.subject &&
+                            recoGenreSubject.toLowerCase() === String(g.subject).toLowerCase();
+                      return (
+                        <button
+                          key={g.slug}
+                          type="button"
+                          onClick={() =>
+                            setRecoGenrePersist(g.slug === "all" ? "" : (g.subject || ""))
+                          }
+                          style={recoGenreChipStyle(!!active)}
+                        >
+                          {g.labelDe}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <span style={{ display:"block", fontSize:11, color:P.textDim, marginTop:8, lineHeight:1.45 }}>
+                    Große Genre-Richtungen (Open Library). „Alle Genres“ hebt den Filter wieder auf — Autor·innen-Kontext vom Regal bleibt aktiv.
+                  </span>
+                  {inferGenreBusy ? (
+                    <span style={{ fontSize:11, color:P.textMuted, marginTop:10, display:"block" }}>Lesen passende Themen aus deinen Büchern …</span>
+                  ) : null}
+                  {!inferGenreBusy && inferredShelfGenres.length > 0 ? (
+                    <div style={{ marginTop:14 }}>
+                      <div style={{ fontWeight:700, color:P.foliageLight, fontSize:12, marginBottom:8 }}>
+                        Passende Themen aus deinem Regal <span style={{ fontWeight:400, color:P.textDim }}>(Open Library-Schlagworte)</span>
+                      </div>
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+                        {inferredShelfGenres.map((subj) => {
+                          const active = recoGenreSubject === subj;
+                          return (
+                            <button
+                              key={subj}
+                              type="button"
+                              onClick={() => setRecoGenrePersist(subj)}
+                              style={recoGenreChipStyle(active)}
+                              title={subj}
+                            >
+                              {subj.length > 36 ? `${subj.slice(0, 34)}…` : subj}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <span style={{ display:"block", fontSize:11, color:P.textDim, marginTop:8 }}>
+                        Entsteht automatisch aus deinen Buchtreffern bei Open Library — ein Klick wendet denselben Filter an wie bei den großen Genres darüber.
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
                 <label style={{ display:"flex", flexDirection:"column", gap:6, fontSize:12, color:P.textMuted }}>
                   <span style={{ fontWeight:700, color:P.cream, fontSize:13 }}>Suchregel</span>
                   <select
@@ -1962,23 +2201,6 @@
                   {ruleHintLine ? (
                     <span style={{ fontSize:11, color:P.textDim, lineHeight:1.45 }}>{ruleHintLine}</span>
                   ) : null}
-                </label>
-                <label style={{ display:"flex", flexDirection:"column", gap:6, fontSize:12, color:P.textMuted }}>
-                  <span style={{ fontWeight:700, color:P.cream, fontSize:13 }}>Zusätzliches Motto oder Thema (optional)</span>
-                  <input
-                    type="text"
-                    placeholder="z. B. Geschichte, Natur, Fantasy …"
-                    value={recoSubjectDraft}
-                    onChange={(e)=>setRecoSubjectDraft(e.target.value)}
-                    autoComplete="off"
-                    style={{
-                      padding:"10px 12px", borderRadius:12,
-                      border:`1px solid ${P.cream}22`,
-                      background:P.brickDark, color:P.cream,
-                      fontFamily:"inherit", fontSize:14,
-                    }}
-                  />
-                  <span style={{ fontSize:11, color:P.textDim }}>Wird an jede Open-Library-Suche angehängt — nach kurzer Pause neu geladen.</span>
                 </label>
                 <label style={{ display:"flex", flexDirection:"column", gap:6, fontSize:12, color:P.textMuted, maxWidth:220 }}>
                   <span style={{ fontWeight:700, color:P.cream, fontSize:13 }}>Nur ab Erscheinungsjahr (optional)</span>
