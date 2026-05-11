@@ -1348,6 +1348,20 @@
       }
     }
 
+    function urlIndicatesPasswordRecovery() {
+      if (typeof window === "undefined") return false;
+      try {
+        const search = new URLSearchParams(window.location.search || "");
+        const hashRaw = (window.location.hash || "").replace(/^#/, "");
+        const hash = new URLSearchParams(hashRaw);
+        const searchType = (search.get("type") || "").toLowerCase();
+        const hashType = (hash.get("type") || "").toLowerCase();
+        return searchType === "recovery" || hashType === "recovery";
+      } catch {
+        return false;
+      }
+    }
+
     const COOKIE_CONSENT_KEY = "shelfmade_privacy_accept_v1";
 
     /** Hinweis auf lokale Speicherung (Sessions, Einwilligung, Theme); keine Tracking-Werbecookies */
@@ -3696,6 +3710,8 @@
       useEffect(() => {
         let unsub = () => {};
         (async () => {
+          const recoveryFromUrl = urlIndicatesPasswordRecovery();
+          if (recoveryFromUrl) setPasswordRecovery(true);
           try {
             const resp = await sb.auth.getSession();
             const sess = resp && resp.data ? resp.data.session : null;
@@ -3722,7 +3738,9 @@
             } = sb.auth.onAuthStateChange((event, s) => {
               setAuthInitError(null);
               setSession(s);
-              if (event === "PASSWORD_RECOVERY") setPasswordRecovery(true);
+              if (event === "PASSWORD_RECOVERY" || urlIndicatesPasswordRecovery()) {
+                setPasswordRecovery(true);
+              }
             });
             unsub = () => subscription.unsubscribe();
           } catch (subErr) {
