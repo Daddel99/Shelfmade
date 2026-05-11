@@ -165,6 +165,36 @@
         flex-direction: column !important;
         align-items: stretch !important;
       }
+
+      .sm-search-hit .sm-hit-add-btn {
+        width: 100% !important;
+        min-height: 48px !important;
+        justify-content: center !important;
+      }
+
+      .sm-addbook-search-row {
+        flex-direction: column !important;
+        align-items: stretch !important;
+      }
+
+      .sm-addbook-search-row > button:last-child {
+        width: 100%;
+        min-height: 48px;
+      }
+
+      .sm-modal-close {
+        min-width: 44px;
+        min-height: 44px;
+        display: flex !important;
+        align-items: center;
+        justify-content: center;
+        border-radius: 12px;
+      }
+
+      .sm-reco-genre-chip {
+        min-height: 44px;
+        align-items: center;
+      }
     }
 
     @media (max-width: 380px) {
@@ -317,8 +347,84 @@
       return null;
     }
 
-    /** Einzelanfrage Open Library (limit anpassbar für Live-Vorschläge) */
-    async function searchOpenLibrary(query, limit = 18, signal) {
+    /** Kanonische Werk-URL-Segmentform z. B. /works/OL27448W (sprachübergreifend dasselbe Werk) */
+    function normalizeOpenLibraryWorkKey(val) {
+      if (val == null) return null;
+      const s = String(val).trim();
+      if (!s) return null;
+      const fromPath = s.match(/\/works\/([^/\s#?]+)/i);
+      if (fromPath) return `/works/${fromPath[1]}`;
+      if (/^OL[\dA-Za-z]+W$/i.test(s)) return `/works/${s}`;
+      return null;
+    }
+
+    /** Aus Open-Library-Suchschnipsel (Solr) — oft schon /works/… */
+    function extractOpenLibraryWorkKeyFromSearchDoc(doc) {
+      if (!doc || typeof doc !== "object") return null;
+      const tryKey = (raw) => {
+        if (typeof raw !== "string") return null;
+        const t = raw.trim();
+        if (t.startsWith("/works/")) return normalizeOpenLibraryWorkKey(t);
+        return null;
+      };
+      let w = tryKey(doc.key);
+      if (w) return w;
+      if (Array.isArray(doc.key)) {
+        for (const x of doc.key) {
+          w = tryKey(x);
+          if (w) return w;
+        }
+      }
+      return null;
+    }
+
+    async function fetchOpenLibraryWorkKeyForEdition(editionId, signal) {
+      const id = String(editionId || "").replace(/^\/books\//i, "").trim();
+      if (!/^OL[\dA-Za-z]+M$/i.test(id)) return null;
+      try {
+        const url = `https://openlibrary.org/books/${encodeURIComponent(id)}.json`;
+        const res = await fetch(url, signal ? { signal } : undefined);
+        if (!res.ok) return null;
+        const j = await res.json();
+        const works = Array.isArray(j.works) ? j.works : [];
+        const k = works[0] && typeof works[0].key === "string" ? works[0].key.trim() : null;
+        if (k && k.includes("/works/")) return normalizeOpenLibraryWorkKey(k);
+      } catch (_) { /* Netzwerk / CORS */ }
+      return null;
+    }
+
+    /** Nachlädt Werk-ID für Auflagen-Links (/books/OL…M) — wenige parallel, damit Mobilfunk nicht leidet */
+    async function attachOpenLibraryWorkKeysToRows(rows, signal, maxResolve = 20) {
+      if (!rows || !rows.length) return rows;
+      const indices = [];
+      for (let i = 0; i < rows.length && indices.length < maxResolve; i++) {
+        const r = rows[i];
+        if (r.work_key) continue;
+        const href = r.link && String(r.link);
+        const m = href && href.match(/\/books\/(OL[\dA-Za-z]+M)(?:\/|$)/i);
+        if (m) indices.push({ i, id: m[1] });
+      }
+      const chunk = 5;
+      for (let off = 0; off < indices.length; off += chunk) {
+        const part = indices.slice(off, off + chunk);
+        await Promise.all(
+          part.map(({ i, id }) =>
+            fetchOpenLibraryWorkKeyForEdition(id, signal).then((wk) => {
+              if (wk && rows[i]) rows[i] = { ...rows[i], work_key: wk };
+            })
+          )
+        );
+      }
+      return rows;
+    }
+
+    /** Einzelanfrage Open Library (limit anpassbar für Live-Vorschläge) — optional Werk-ID für Auflagen nachladen */
+    async function searchOpenLibrary(query, limit = 18, signal, attachOpts) {
+      const opts = attachOpts || {};
+      const resolveEditions = opts.resolveEditionWorkKeys === true;
+      const maxEditionLookups =
+        opts.maxEditionLookups != null ? opts.maxEditionLookups : Math.min(limit, 16);
+
       const q = query.trim();
       if (!q) return [];
       const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${limit}`;
@@ -337,8 +443,10 @@
         if (year == null || typeof year !== "number") year = 0;
         const link = doc.key ? `https://openlibrary.org${doc.key}` : null;
         const cover_url = openLibraryCoverUrl(doc);
-        out.push({ title, author, year, link, cover_url });
+        const work_key = extractOpenLibraryWorkKeyFromSearchDoc(doc) || null;
+        out.push({ title, author, year, link, cover_url, work_key });
       }
+      if (resolveEditions && out.length) await attachOpenLibraryWorkKeysToRows(out, signal, maxEditionLookups);
       return out;
     }
 
@@ -370,8 +478,17 @@
         for (const b of list) {
           const k = `${b.title.toLowerCase()}|${b.author.toLowerCase()}`;
           const ex = map.get(k);
-          if (!ex) map.set(k, b);
-          else if (!ex.cover_url && b.cover_url) map.set(k, b);
+          if (!ex) {
+            map.set(k, { ...b });
+          } else {
+            const nw = normalizeOpenLibraryWorkKey(b.work_key);
+            const ow = normalizeOpenLibraryWorkKey(ex.work_key);
+            const merged = { ...ex, ...b };
+            merged.cover_url = b.cover_url || ex.cover_url;
+            merged.link = b.link || ex.link;
+            merged.work_key = nw || ow || null;
+            map.set(k, merged);
+          }
         }
       }
       return [...map.values()];
@@ -400,22 +517,36 @@
       { id: "title_keywords", label: "Nur Titel-Stichwörter", hint: "Stichwörter aus deinen Titeln + optional Genre-Suche bei Open Library." },
     ];
 
-    /** Große Genres (Open-Library-„subject“-Schreibweisen üblicherweise auf Englisch) — Anzeige auf Deutsch */
+    /** Genres für Open Library (subject). Zusätzlich Erfolgs-, Business-, Verhandlungs-Sachliteratur wie „Atomic Habits“-Welt. Anzeige auf Deutsch. */
     const RECO_MAJOR_GENRES = [
       { slug: "all", labelDe: "Alle Genres", subject: "" },
+      { slug: "selfhelp", labelDe: "Selbsthilfe & Life Skills", subject: "Self-help publications" },
+      { slug: "success", labelDe: "Erfolg & Leistung", subject: "Success" },
+      { slug: "conduct", labelDe: "Lebensführung & Gewohnheiten", subject: "Conduct of life" },
+      { slug: "business", labelDe: "Business & Wirtschaft", subject: "Business" },
+      { slug: "negotiation", labelDe: "Verhandeln & Dealing", subject: "Negotiation" },
+      { slug: "persuasion", labelDe: "Überzeugen & Einfluss", subject: "Persuasion (Psychology)" },
+      { slug: "communication", labelDe: "Kommunikation", subject: "Business communication" },
+      { slug: "psychology", labelDe: "Psychologie (Popular)", subject: "Psychology" },
+      { slug: "leadership", labelDe: "Führung / Leadership", subject: "Leadership" },
+      { slug: "management", labelDe: "Management", subject: "Management" },
+      { slug: "timemgmt", labelDe: "Zeit & Produktivität", subject: "Time management" },
+      { slug: "motivation", labelDe: "Motivation", subject: "Motivation (Psychology)" },
+      { slug: "career", labelDe: "Karriere & Arbeit", subject: "Careers" },
+      { slug: "economics_pop", labelDe: "Wirtschaft populär", subject: "Popular economics" },
       { slug: "fiction", labelDe: "Romane & Fiction", subject: "Fiction" },
       { slug: "history", labelDe: "Geschichte", subject: "History" },
       { slug: "sf", labelDe: "Science-Fiction", subject: "Science fiction" },
       { slug: "fantasy", labelDe: "Fantasy", subject: "Fantasy" },
       { slug: "mystery", labelDe: "Krimi & Mystery", subject: "Mystery fiction" },
-      { slug: "romance", labelDe: "Romantik / Liebesromane", subject: "Romance" },
-      { slug: "biography", labelDe: "Biografien & Erinnerungen", subject: "Biography" },
+      { slug: "romance", labelDe: "Romantik", subject: "Romance" },
+      { slug: "biography", labelDe: "Biografien", subject: "Biography" },
       { slug: "thriller", labelDe: "Thriller & Spannung", subject: "Thrillers (Fiction)" },
       { slug: "horror", labelDe: "Horror", subject: "Horror tales" },
       { slug: "ya", labelDe: "Young Adult", subject: "Young adult fiction" },
       { slug: "children", labelDe: "Kinder- & Jugendbuch", subject: "Juvenile fiction" },
       { slug: "poetry", labelDe: "Lyrik / Poesie", subject: "Poetry" },
-      { slug: "essays", labelDe: "Essays & Sachbuch allgemein", subject: "Essays" },
+      { slug: "essays", labelDe: "Essays & Sachbuch", subject: "Essays" },
     ];
 
     function merklisteStorageKey(userId) {
@@ -496,6 +627,149 @@
       const s = String(authorField || "").trim();
       if (!s || /^unbekannt$/i.test(s)) return "";
       return s.split(/[,;&]/)[0].trim().replace(/\s+(und|and)\s+.+$/i, "").trim();
+    }
+
+    /** Titel ohne Untertitel/Umlaute fürs Abgleichen (gleiches Buch, andere Sprache) */
+    function normalizeTitleForShelfMatch(rawTitle) {
+      let s = String(rawTitle || "").toLowerCase();
+      s = s.split(/[:(\[—–-]/)[0];
+      s = s
+        .replace(/ä/g, "a").replace(/ö/g, "o").replace(/ü/g, "u").replace(/ß/g, "ss")
+        .replace(/[„"'«»`´]/g, " ")
+        .replace(/[.,;:!?¿¡()[\]{}]/g, " ");
+      s = s.replace(/[^a-z0-9\s]/gi, " ");
+      s = s.replace(/\s+/g, " ").trim();
+      return s;
+    }
+
+    function canonAuthorStr(authorField) {
+      let s = primaryAuthorFromBookAuthor(authorField).toLowerCase().trim();
+      if (!s) return "";
+      s = s.replace(/ä/g, "a").replace(/ö/g, "o").replace(/ü/g, "u").replace(/ß/g, "ss");
+      s = s.replace(/\./g, " ");
+      s = s.replace(/[^a-z0-9\s-]/gi, " ");
+      s = s.replace(/\s+/g, " ").trim();
+      return s;
+    }
+
+    const SHELF_TITLE_DEDUP_STOP = new Set([
+      "the","a","an","and","or","of","on","in","to","for","with","from","into","about","von","zu","auf","bei","vor","ein","eine","einer","eines","einem","einen","der","die","das","dem","den","des","mit","nach","wie","über","fur","fur","without","edited","translator","adaptation","book","roman","novel","volume","vol","edition","edition","study","guide","guides","graphic","novels","new","edition","edition","introduction","critical","essay","novelization","novelisation","roman","serie","series","teil","band",
+    ]);
+
+    /** Jaccard auf Titelwort-Mengen (sprachübergreifend brauchbar wenn Autor gleich bleibt) */
+    function titleWordSetForDedup(rawTitle) {
+      const norm = normalizeTitleForShelfMatch(rawTitle);
+      const words = norm.split(/\s/).filter((w) => {
+        if (w.length < 3) return false;
+        if (/^\d+$/.test(w)) return false;
+        if (SHELF_TITLE_DEDUP_STOP.has(w)) return false;
+        return true;
+      });
+      return new Set(words);
+    }
+
+    function jaccardTokenSets(aSet, bSet) {
+      if (!aSet.size && !bSet.size) return 1;
+      let inter = 0;
+      for (const x of aSet) {
+        if (bSet.has(x)) inter++;
+      }
+      const u = aSet.size + bSet.size - inter;
+      return u <= 0 ? 0 : inter / u;
+    }
+
+    /** Gleiche*r Autor·in trotz abweichender Schreibweise (Transliteration/Titel-Reihenfolge) */
+    function authorsLikelySame(authorFieldA, authorFieldB) {
+      const pa = canonAuthorStr(authorFieldA);
+      const pb = canonAuthorStr(authorFieldB);
+      if (!pa || !pb) return false;
+      if (pa === pb) return true;
+      if (pa.length >= 7 && pb.length >= 7 && (pa.includes(pb) || pb.includes(pa))) return true;
+      const wa = [...new Set(pa.split(" ").filter((w) => w.length >= 3))];
+      const wb = [...new Set(pb.split(" ").filter((w) => w.length >= 3))];
+      if (!wa.length || !wb.length) return pa === pb;
+      /* gleiche Tokens (z. B. „king stephen“ vs „stephen king“) */
+      const sortedEq = [...wa].sort().join(",") === [...wb].sort().join(",");
+      if (sortedEq) return true;
+      for (const x of wa) {
+        for (const y of wb) {
+          if (x === y) return true;
+          if (x.length >= 5 && y.length >= 5 && (x.includes(y) || y.includes(x))) return true;
+        }
+      }
+      return false;
+    }
+
+    function buildShelfOwnedTitleIndex(ownedBooks) {
+      return (ownedBooks || []).map((b) => ({
+        authorField: b.author,
+        collapsedTitle: normalizeTitleForShelfMatch(b.title),
+        tokens: titleWordSetForDedup(b.title),
+      }));
+    }
+
+    function buildShelfOwnedWorkKeySet(ownedBooks) {
+      const set = new Set();
+      for (const b of ownedBooks || []) {
+        const w = normalizeOpenLibraryWorkKey(b.open_library_work_key);
+        if (w) set.add(w);
+      }
+      return set;
+    }
+
+    /** Schon besessen? Inkl. Werk-ID von Open Library sowie Titel-/Autor·innen-Heuristiken. */
+    function recoCandidateAlreadyOnShelf(candidate, shelfIndex, ownedStrictKeys, ownedWorkKeys) {
+      const k = bookDiscoveryKey(candidate);
+      if (ownedStrictKeys.has(k)) return true;
+      const cw = normalizeOpenLibraryWorkKey(candidate.work_key);
+      if (cw && ownedWorkKeys && ownedWorkKeys.has(cw)) return true;
+      const candCol = normalizeTitleForShelfMatch(candidate.title);
+      const candTok = titleWordSetForDedup(candidate.title);
+      const pa = canonAuthorStr(candidate.author);
+      if (!pa || !primaryAuthorFromBookAuthor(candidate.author)) return false;
+
+      for (const row of shelfIndex) {
+        if (!authorsLikelySame(row.authorField, candidate.author)) continue;
+
+        const ocol = row.collapsedTitle;
+        if (ocol && candCol && ocol === candCol) return true;
+
+        /* Lange Titel, ein String enthält den anderen (Ausgaben/Zusatz) */
+        const minChunk = Math.min(ocol.length, candCol.length);
+        if (
+          minChunk >= 14 &&
+          (ocol.includes(candCol) || candCol.includes(ocol)) &&
+          candCol.length >= 12
+        ) {
+          return true;
+        }
+
+        /* Wortüberlappung (gleiche oder sehr ähnliche Titel ohne Übersetzung) */
+        const jac = jaccardTokenSets(row.tokens, candTok);
+        if (jac >= 0.42) return true;
+
+        let longHits = 0;
+        let medHits = 0;
+        for (const w of row.tokens) {
+          if (!candTok.has(w)) continue;
+          if (w.length >= 7) longHits++;
+          else if (w.length >= 5) medHits++;
+        }
+
+        /* Knappe Sachbuch-/One-Concept-Titel: gleiches markantes Signalwort oder starke Überlappung */
+        const smallBoth = Math.max(row.tokens.size, candTok.size) <= 4;
+        if (smallBoth && jac >= 0.29) return true;
+
+        /* Mehrteilige Sachbuch-/Business-Titel: gleicher langer Schlüsseltausammenhang */
+        if (longHits >= 2 || (longHits >= 1 && jac >= 0.28 && Math.min(row.tokens.size, candTok.size) >= 4)) return true;
+
+        if (jac >= 0.38 && Math.min(row.tokens.size, candTok.size) >= 5 && (medHits >= 3 || medHits + longHits >= 4))
+          return true;
+      }
+
+      /* Übersetzung ohne gemeinsame Titelwortform: keine zuverlässige Erkennung ohne ISBN/Werk-ID — Bewusst keine Löschung */
+
+      return false;
     }
 
     /** Ein markantes Wort aus dem Titel (ohne sehr kurze Füllwörter) */
@@ -650,6 +924,8 @@
           : rows.filter((x) => typeof x.year === "number" && x.year > 0 && x.year >= minY);
 
       const ownedKeys = new Set((ownedBooks || []).map(bookDiscoveryKey));
+      const shelfOwnedTitleIndex = buildShelfOwnedTitleIndex(ownedBooks);
+      const ownedWorkKeys = buildShelfOwnedWorkKeySet(ownedBooks);
       const pool = (ownedBooks || []).filter((b) => primaryAuthorFromBookAuthor(b.author));
       const { shelfAuthorLc, ownedTitleKeywordsLc } = shelfRecoAffinityContext(ownedBooks);
 
@@ -722,8 +998,10 @@
       }
 
       let out = mergeUniqueBookLists(lists);
+      await attachOpenLibraryWorkKeysToRows(out, undefined, Math.min(40, Math.max(out.length, 14)));
       out = afterYear(out);
-      out = out.filter((x) => !ownedKeys.has(bookDiscoveryKey(x)));
+      out = out.filter((x) =>
+        !recoCandidateAlreadyOnShelf(x, shelfOwnedTitleIndex, ownedKeys, ownedWorkKeys));
       out = out.filter((x) => primaryAuthorFromBookAuthor(x.author));
       out = rankRecoByShelfAffinity(out, shelfAuthorLc, ownedTitleKeywordsLc);
       return out.slice(0, limit);
@@ -842,7 +1120,10 @@
         if (c.length !== 13 && c.length !== 10) return [];
         if (c.length === 10 && !/^\d{9}[\dX]$/.test(c)) return [];
         if (c.length === 13 && !/^\d{13}$/.test(c)) return [];
-        return searchOpenLibrary(`isbn:${c}`, 18);
+        return searchOpenLibrary(`isbn:${c}`, 18, undefined, {
+          resolveEditionWorkKeys: true,
+          maxEditionLookups: 14,
+        });
       }
 
       say("Strichcode wird geprüft…");
@@ -890,7 +1171,9 @@
         );
       }
 
-      return { list: mergeUniqueBookLists([list]), isbnUsed: isbn || null, ocrSnippet: (ocrText || "").slice(0, 520) };
+      const mergedList = mergeUniqueBookLists([list]);
+      await attachOpenLibraryWorkKeysToRows(mergedList, undefined, Math.min(20, mergedList.length || 14));
+      return { list: mergedList, isbnUsed: isbn || null, ocrSnippet: (ocrText || "").slice(0, 520) };
     }
 
     function createSb() {
@@ -1097,12 +1380,12 @@
       );
     }
 
-    function Btn({ children, variant="primary", accent, onClick, style:s, small, disabled, type = "button" }) {
+    function Btn({ children, variant="primary", accent, onClick, style:s, small, disabled, type = "button", className }) {
       const [h, setH] = useState(false);
       const bg = variant==="primary" ? (accent||P.goldLight) : variant==="secondary" ? `${P.cream}15` : "transparent";
       const clr = variant==="primary" ? P.brickDark : P.cream;
       return (
-        <button type={type} disabled={disabled} style={{
+        <button type={type} disabled={disabled} className={className} style={{
           padding: small?"6px 14px":"10px 20px", borderRadius:"12px",
           fontSize: small?"13px":"14px", fontWeight:600,
           fontFamily:"'Crimson Pro',Georgia,serif",
@@ -1134,7 +1417,7 @@
           }} onClick={e=>e.stopPropagation()}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"24px" }}>
               <h2 style={{ fontFamily:"'Crimson Pro',Georgia,serif", fontSize:"22px", fontWeight:700, color:P.cream }}>{title}</h2>
-              <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", padding:"4px" }}>
+              <button type="button" className="sm-modal-close" onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", padding:"4px", marginRight:-4 }}>
                 <Icon name="x" size={18} color={P.textMuted}/>
               </button>
             </div>
@@ -1567,7 +1850,10 @@
         const ac = new AbortController();
         const t = setTimeout(async () => {
           try {
-            const list = await searchOpenLibrary(q, 10, ac.signal);
+            const list = await searchOpenLibrary(q, 10, ac.signal, {
+              resolveEditionWorkKeys: true,
+              maxEditionLookups: 8,
+            });
             setSuggestions(list.slice(0, 8));
           } catch (e) {
             if (e.name !== "AbortError") setSuggestions([]);
@@ -1586,6 +1872,7 @@
         setResults([]);
         try {
           const list = await searchOpenLibrarySmart(query);
+          await attachOpenLibraryWorkKeysToRows(list, null, Math.min(22, Math.max(list.length, 8)));
           setResults(list);
           if (list.length === 0) setSearchErr("Nichts gefunden – anderen Suchbegriff probieren.");
         } catch (e) {
@@ -1674,8 +1961,8 @@
 
           {tab==="search" && (
             <>
-              <div style={{ display:"flex", gap:"8px", marginBottom:"8px" }}>
-                <div style={{ flex:1, position:"relative" }}>
+              <div className="sm-addbook-search-row" style={{ display:"flex", gap:"8px", marginBottom:"8px", alignItems:"stretch" }}>
+                <div style={{ flex:1, position:"relative", minWidth:0 }}>
                   <div style={{ position:"absolute", left:"12px", top:"50%", transform:"translateY(-50%)", zIndex:2, pointerEvents:"none" }}>
                     <Icon name="search" size={15} color={P.textDim}/>
                   </div>
@@ -1711,7 +1998,12 @@
                         <button
                           key={`sug-${b.title}-${i}`}
                           type="button"
-                          onMouseDown={e=>{ e.preventDefault(); if (blurTimer.current) clearTimeout(blurTimer.current); pickSuggestion(b); }}
+                          onPointerDown={(e)=>{
+                            if (e.pointerType === "mouse" && e.button !== 0) return;
+                            e.preventDefault();
+                            if (blurTimer.current) clearTimeout(blurTimer.current);
+                            pickSuggestion(b);
+                          }}
                           style={{
                             display:"flex", alignItems:"center", gap:12, width:"100%", textAlign:"left",
                             padding:"10px 14px", border:"none", borderBottom:i<suggestions.length-1?`1px solid ${P.cream}08`:"none",
@@ -1749,7 +2041,7 @@
                         <div style={{ fontSize:"12px", color:P.textMuted }}>{b.author}{b.year ? ` · ${b.year}` : ""}</div>
                       </div>
                     </div>
-                    <Btn accent={accent} small onClick={()=>{ onAddBook(b); onClose(); }}>
+                    <Btn accent={accent} small className="sm-hit-add-btn" onClick={()=>{ onAddBook(b); onClose(); }}>
                       <Icon name="plus" size={13} color={P.brickDark}/> Hinzufügen
                     </Btn>
                   </div>
@@ -1836,7 +2128,7 @@
                         <div style={{ fontSize:"12px", color:P.textMuted }}>{b.author}{b.year ? ` · ${b.year}` : ""}</div>
                       </div>
                     </div>
-                    <Btn type="button" accent={accent} small onClick={()=>{ onAddBook(b); onClose(); }}>
+                    <Btn type="button" accent={accent} small className="sm-hit-add-btn" onClick={()=>{ onAddBook(b); onClose(); }}>
                       <Icon name="plus" size={13} color={P.brickDark}/> Hinzufügen
                     </Btn>
                   </div>
@@ -1865,10 +2157,19 @@
       const [inferredShelfGenres, setInferredShelfGenres] = useState([]);
       const [inferGenreBusy, setInferGenreBusy] = useState(false);
       const [recoMinYearStr, setRecoMinYearStr] = useState("");
+      const [recoGenrePanelOpen, setRecoGenrePanelOpen] = useState(false);
 
       const bookIdsSig = useMemo(() => [...books.map((b) => b.id)].sort((a, b) => String(a).localeCompare(String(b))).join(","), [books]);
       const merkKeySet = useMemo(() => new Set(merkliste.map(bookDiscoveryKey)), [merkliste]);
       const ruleHintLine = useMemo(() => SHELF_RECO_RULES.find((r) => r.id === recoRule)?.hint || "", [recoRule]);
+      const recoGenreSummaryLabel = useMemo(() => {
+        if (!recoGenreSubject.trim()) return "";
+        const g = recoGenreSubject.trim();
+        const preset = RECO_MAJOR_GENRES.find(
+          (gi) => gi.subject && gi.subject.toLowerCase() === g.toLowerCase()
+        );
+        return preset ? preset.labelDe : g;
+      }, [recoGenreSubject]);
 
       useEffect(() => {
         if (!shelfUserId) return;
@@ -1965,7 +2266,10 @@
       };
 
       const recoGenreChipStyle = (active) => ({
-        padding:"7px 14px",
+        display:"inline-flex",
+        alignItems:"center",
+        justifyContent:"center",
+        padding:"10px 16px",
         borderRadius:999,
         fontSize:13,
         fontWeight:600,
@@ -1976,6 +2280,7 @@
         color:active ? P.cream : P.textMuted,
         transition:"border 0.15s, background 0.15s",
         flexShrink:0,
+        WebkitTapHighlightColor:"rgba(242,230,217,0.1)",
       });
 
       const toggleMerk = (bk) => {
@@ -1991,6 +2296,7 @@
             year: typeof bk.year === "number" ? bk.year : 0,
             link: bk.link || null,
             cover_url: bk.cover_url || null,
+            work_key: normalizeOpenLibraryWorkKey(bk.work_key || bk.open_library_work_key || null),
             merkedAt: new Date().toISOString(),
           }];
           saveMerkliste(shelfUserId, next);
@@ -2113,7 +2419,7 @@
                   <span style={{ fontSize:"20px", fontWeight:700, color:P.foliageLight }}>Zum Stöbern</span>
                 </div>
                 <p style={{ fontSize:12, color:P.textMuted, marginTop:"6px", lineHeight:1.5 }}>
-                  Ähnliche Titel durch deine Autor·innen plus optionales Genre bei Open Library. Es wird automatisch gewichtet, was zu deinem Regal passt — du musst keine Stichwörter tippen. Einstellungen bleiben in diesem Browser.
+                  Vorschläge nutzen Open Library · sehr wahrscheinlich gleiche Bücher wie im eigenen Regal werden ausgeschlossen (auch bei anderem Titelwortlaut oder Sprache). Genre-Chips sind zuerst eingeklappt — mit „Genre & Themen wählen“ aufklappen. Ohne Genre nutzt Shelfmade nur das Autor·innen-/Titel-Radar.
                 </p>
               </div>
 
@@ -2126,6 +2432,36 @@
                 background:`${P.cream}06`,
                 border:`1px solid ${P.cream}10`,
               }}>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:12, alignItems:"center" }}>
+                  <Btn
+                    variant="secondary"
+                    small
+                    className="sm-reco-genre-toggle"
+                    onClick={() => setRecoGenrePanelOpen((o) => !o)}
+                    style={{ alignItems:"center", gap:8, minHeight:44 }}
+                  >
+                    <span style={{
+                      display:"inline-flex",
+                      transform: recoGenrePanelOpen ? "rotate(90deg)" : "none",
+                      transition:"transform 0.18s ease",
+                    }}>
+                      <Icon name="chevron" size={14} color={P.cream}/>
+                    </span>
+                    {recoGenrePanelOpen ? "Genre & Themen ausblenden" : "Genre & Themen wählen"}
+                  </Btn>
+                  {recoGenreSubject ? (
+                    <span style={{ fontSize:13, color:P.textMuted, lineHeight:1.45 }}>
+                      Aktiver Genre-Filter:{" "}
+                      <strong style={{ color:P.foliageLight }}>{recoGenreSummaryLabel}</strong>
+                    </span>
+                  ) : (
+                    !recoGenrePanelOpen ? (
+                      <span style={{ fontSize:13, color:P.textDim }}>Kein Genre-Filter aktiv</span>
+                    ) : null
+                  )}
+                </div>
+
+                {recoGenrePanelOpen ? (
                 <div>
                   <div style={{ fontWeight:700, color:P.cream, fontSize:13, marginBottom:8 }}>Genre · einmal antippen</div>
                   <div style={{ display:"flex", flexWrap:"wrap", gap:8, alignItems:"center" }}>
@@ -2139,6 +2475,7 @@
                         <button
                           key={g.slug}
                           type="button"
+                          className="sm-reco-genre-chip"
                           onClick={() =>
                             setRecoGenrePersist(g.slug === "all" ? "" : (g.subject || ""))
                           }
@@ -2150,7 +2487,7 @@
                     })}
                   </div>
                   <span style={{ display:"block", fontSize:11, color:P.textDim, marginTop:8, lineHeight:1.45 }}>
-                    Große Genre-Richtungen (Open Library). „Alle Genres“ hebt den Filter wieder auf — Autor·innen-Kontext vom Regal bleibt aktiv.
+                    Open Library-Sach- und Erfolgsliteratur („Atomic Habits“-Genre) liegt oben, Belletristik weiter unten. „Alle Genres“ hebt den Genre-Overlay auf — Vergleich mit deinem Regal bleibt aktiv.
                   </span>
                   {inferGenreBusy ? (
                     <span style={{ fontSize:11, color:P.textMuted, marginTop:10, display:"block" }}>Lesen passende Themen aus deinen Büchern …</span>
@@ -2158,7 +2495,7 @@
                   {!inferGenreBusy && inferredShelfGenres.length > 0 ? (
                     <div style={{ marginTop:14 }}>
                       <div style={{ fontWeight:700, color:P.foliageLight, fontSize:12, marginBottom:8 }}>
-                        Passende Themen aus deinem Regal <span style={{ fontWeight:400, color:P.textDim }}>(Open Library-Schlagworte)</span>
+                        Aus deinem Regal geschätzt <span style={{ fontWeight:400, color:P.textDim }}>(Open Library-Schlagworte)</span>
                       </div>
                       <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
                         {inferredShelfGenres.map((subj) => {
@@ -2167,6 +2504,7 @@
                             <button
                               key={subj}
                               type="button"
+                              className="sm-reco-genre-chip"
                               onClick={() => setRecoGenrePersist(subj)}
                               style={recoGenreChipStyle(active)}
                               title={subj}
@@ -2177,11 +2515,13 @@
                         })}
                       </div>
                       <span style={{ display:"block", fontSize:11, color:P.textDim, marginTop:8 }}>
-                        Entsteht automatisch aus deinen Buchtreffern bei Open Library — ein Klick wendet denselben Filter an wie bei den großen Genres darüber.
+                        Automatisch aus deinen Büchern; gleiche Rolle wie die festen Chips oben — Filter schließt Bücher weiterhin gegen dein bestehendes Regal ab (inkl. wahrscheinlicher Übersetzungen).
                       </span>
                     </div>
                   ) : null}
                 </div>
+                ) : null}
+
                 <label style={{ display:"flex", flexDirection:"column", gap:6, fontSize:12, color:P.textMuted }}>
                   <span style={{ fontWeight:700, color:P.cream, fontSize:13 }}>Suchregel</span>
                   <select
@@ -3177,6 +3517,7 @@
           year: b.year ?? 0,
           link: b.link || null,
           cover_url: b.cover_url || null,
+          open_library_work_key: normalizeOpenLibraryWorkKey(b.work_key || b.open_library_work_key),
           rating: null,
         };
         const { data, error } = await sb.from("books").insert(row).select().single();

@@ -17,6 +17,7 @@ create table if not exists public.books (
   year int not null default 0,
   link text,
   cover_url text,
+  open_library_work_key text,
   rating smallint check (rating is null or (rating >= 1 and rating <= 5)),
   created_at timestamptz default now()
 );
