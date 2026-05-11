@@ -195,6 +195,10 @@
         min-height: 44px;
         align-items: center;
       }
+
+      .sm-reco-refresh-btn {
+        width: 100%;
+      }
     }
 
     @media (max-width: 380px) {
@@ -416,6 +420,63 @@
         );
       }
       return rows;
+    }
+
+    /** Treffer der Kurzsuche passt zum Regal-Eintrag (für Werk-ID-Nachladen bei alten Büchern) */
+    function openLibraryHitMatchesShelfBook(shelfBook, hit) {
+      if (!shelfBook || !hit) return false;
+      if (!authorsLikelySame(shelfBook.author, hit.author)) return false;
+      if (bookDiscoveryKey(shelfBook) === bookDiscoveryKey(hit)) return true;
+      const jac = jaccardTokenSets(
+        titleWordSetForDedup(shelfBook.title),
+        titleWordSetForDedup(hit.title)
+      );
+      return jac >= 0.2;
+    }
+
+    /**
+     * Fehlende Open-Library-Werk-IDs für bestehende Regal-Bücher nachziehen (Translations & Vorschläge).
+     * Holt pro Buch eine Kurzsuche bei Open Library und aktualisiert die Zeile — nacheinander mit kurzer Pause (Mobil/Mobile net).
+     */
+    async function backfillMissingOpenLibraryWorkKeysForShelf(books, sb, userId, { maxBooks = 40, toast, onReloadShelf } = {}) {
+      if (!sb || !userId || !books || !books.length) return 0;
+      const missing = books.filter((b) => !normalizeOpenLibraryWorkKey(b.open_library_work_key));
+      const queue = missing.slice(0, Math.max(0, Math.min(maxBooks, 80)));
+      if (!queue.length) {
+        if (toast) toast("Alle sichtbaren Bücher haben schon eine Open-Library-Werk-ID.");
+        return 0;
+      }
+      let updated = 0;
+      for (const b of queue) {
+        const au = primaryAuthorFromBookAuthor(b.author);
+        const q = `${au} ${String(b.title || "").trim()}`.trim().slice(0, 220);
+        if (q.length < 3) continue;
+        try {
+          const hits = await searchOpenLibrary(q, 5, undefined, {
+            resolveEditionWorkKeys: true,
+            maxEditionLookups: 3,
+          });
+          const match = hits.find((h) => openLibraryHitMatchesShelfBook(b, h));
+          const wk = match && normalizeOpenLibraryWorkKey(match.work_key);
+          if (!wk) {
+            await new Promise((r) => setTimeout(r, 80));
+            continue;
+          }
+          const { error } = await sb.from("books").update({ open_library_work_key: wk }).eq("id", b.id).eq("user_id", userId);
+          if (!error) updated++;
+          else if (toast && /column|schema|open_library_work_key/i.test(error.message || "")) {
+            toast("Spalte open_library_work_key fehlt — bitte migration_ol_work_key.sql in Supabase ausführen.");
+            break;
+          } else if (toast) toast(error.message);
+        } catch (_) { /* Netzwerk */ }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      if (updated > 0 && typeof onReloadShelf === "function") onReloadShelf();
+      if (toast) {
+        if (updated > 0) toast(`${updated} Werk-ID${updated === 1 ? "" : "s"} von Open Library ergänzt.`);
+        else toast("Keine zuverlässigen Werk-IDs gefunden — später erneut versuchen oder Titel prüfen.");
+      }
+      return updated;
     }
 
     /** Einzelanfrage Open Library (limit anpassbar für Live-Vorschläge) — optional Werk-ID für Auflagen nachladen */
@@ -1363,6 +1424,7 @@
         palette: <><circle cx="13.5" cy="6.5" r="2" fill={color} opacity="0.4"/><circle cx="17.5" cy="10.5" r="2" fill={color} opacity="0.4"/><circle cx="8.5" cy="7.5" r="2" fill={color} opacity="0.4"/><circle cx="6.5" cy="12" r="2" fill={color} opacity="0.4"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.04-.23-.29-.38-.63-.38-1.04 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-5.17-4.49-9-10-9z" stroke={color} strokeWidth="1.8" fill="none"/></>,
         trash:   <><polyline points="3 6 5 6 21 6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" stroke={color} strokeWidth="1.8" fill="none"/><path d="M10 11v6M14 11v6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round"/></>,
         star:    <><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" stroke={color} strokeWidth="1.65" strokeLinejoin="round" fill="none"/></>,
+        refresh: <><path d="M21 2v6h-6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/><path d="M3.05 13A9 9 0 1020.94 9" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/><path d="M1 22v-6h6" stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/></>,
       };
       return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" style={{ display:"block", flexShrink:0 }}>{icons[name]}</svg>;
     }
@@ -2145,7 +2207,7 @@
       );
     }
 
-    function ProfilePage({ user, books, borrowedItems, accent, cardBg, onRemoveBook, onRateBook, onOpenAdd, themeKey, onSetTheme, friendCount, onReturnLoan, onLendBook, onAddSuggestedBook, toast }) {
+    function ProfilePage({ user, books, borrowedItems, accent, cardBg, onRemoveBook, onRateBook, onOpenAdd, themeKey, onSetTheme, friendCount, onReturnLoan, onLendBook, onAddSuggestedBook, toast, sb, onReloadShelf }) {
       const shelfUserId = user && user.id;
       const [recoBooks, setRecoBooks] = useState([]);
       const [recoLoading, setRecoLoading] = useState(false);
@@ -2158,8 +2220,14 @@
       const [inferGenreBusy, setInferGenreBusy] = useState(false);
       const [recoMinYearStr, setRecoMinYearStr] = useState("");
       const [recoGenrePanelOpen, setRecoGenrePanelOpen] = useState(false);
+      const [recoRefreshNonce, setRecoRefreshNonce] = useState(0);
+      const [backfillOlBusy, setBackfillOlBusy] = useState(false);
 
       const bookIdsSig = useMemo(() => [...books.map((b) => b.id)].sort((a, b) => String(a).localeCompare(String(b))).join(","), [books]);
+      const booksMissingOlWorkKey = useMemo(
+        () => books.filter((b) => !normalizeOpenLibraryWorkKey(b.open_library_work_key)),
+        [books]
+      );
       const merkKeySet = useMemo(() => new Set(merkliste.map(bookDiscoveryKey)), [merkliste]);
       const ruleHintLine = useMemo(() => SHELF_RECO_RULES.find((r) => r.id === recoRule)?.hint || "", [recoRule]);
       const recoGenreSummaryLabel = useMemo(() => {
@@ -2252,7 +2320,21 @@
         };
         run();
         return () => { cancelled = true; };
-      }, [bookIdsSig, books.length, recoRule, recoGenreSubject, recoMinYearStr]);
+      }, [bookIdsSig, books.length, recoRule, recoGenreSubject, recoMinYearStr, recoRefreshNonce]);
+
+      const runBackfillOpenLibraryWorkKeys = async () => {
+        if (!sb || !shelfUserId || backfillOlBusy || !books.length) return;
+        setBackfillOlBusy(true);
+        try {
+          await backfillMissingOpenLibraryWorkKeysForShelf(books, sb, shelfUserId, {
+            maxBooks: 45,
+            toast,
+            onReloadShelf: typeof onReloadShelf === "function" ? onReloadShelf : undefined,
+          });
+        } finally {
+          setBackfillOlBusy(false);
+        }
+      };
 
       const setRecoRulePersist = (nextRule) => {
         setRecoRule(nextRule);
@@ -2414,13 +2496,44 @@
           {books.length > 0 && (
             <div style={{ marginBottom:"28px" }}>
               <div style={{ marginBottom:"10px" }}>
-                <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
-                  <Icon name="search" size={17} color={P.goldLight}/>
-                  <span style={{ fontSize:"20px", fontWeight:700, color:P.foliageLight }}>Zum Stöbern</span>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, flexWrap:"wrap" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:"8px", minHeight:44 }}>
+                    <Icon name="search" size={17} color={P.goldLight}/>
+                    <span style={{ fontSize:"20px", fontWeight:700, color:P.foliageLight }}>Zum Stöbern</span>
+                  </div>
+                  <Btn
+                    variant="secondary"
+                    small
+                    className="sm-reco-refresh-btn"
+                    disabled={recoLoading}
+                    onClick={() => setRecoRefreshNonce((n) => n + 1)}
+                    style={{ minHeight:44, alignItems:"center", gap:8 }}
+                  >
+                    <Icon name="refresh" size={15} color={P.cream}/>
+                    Neu laden
+                  </Btn>
                 </div>
                 <p style={{ fontSize:12, color:P.textMuted, marginTop:"6px", lineHeight:1.5 }}>
                   Vorschläge nutzen Open Library · sehr wahrscheinlich gleiche Bücher wie im eigenen Regal werden ausgeschlossen (auch bei anderem Titelwortlaut oder Sprache). Genre-Chips sind zuerst eingeklappt — mit „Genre & Themen wählen“ aufklappen. Ohne Genre nutzt Shelfmade nur das Autor·innen-/Titel-Radar.
                 </p>
+                {sb && booksMissingOlWorkKey.length > 0 ? (
+                  <div style={{ marginTop:12, padding:"12px 14px", borderRadius:14, background:`${P.cream}08`, border:`1px solid ${P.cream}12` }}>
+                    <p style={{ fontSize:12, color:P.textMuted, lineHeight:1.5, marginBottom:10 }}>
+                      <strong style={{ color:P.cream }}>{booksMissingOlWorkKey.length}</strong>{" "}
+                      {booksMissingOlWorkKey.length === 1 ? "Buch hat" : "Bücher haben"} noch keine Open-Library-Werk-ID — Vorschläge erkennen Übersetzungen dann nur unscharf. Einmalig bei Open Library nachziehen (dauert etwas, WLAN ist angenehmer):
+                    </p>
+                    <Btn
+                      variant="secondary"
+                      small
+                      disabled={backfillOlBusy}
+                      onClick={runBackfillOpenLibraryWorkKeys}
+                      style={{ minHeight:44, alignItems:"center", gap:8 }}
+                    >
+                      <Icon name="refresh" size={14} color={P.cream}/>
+                      {backfillOlBusy ? "Werk-IDs werden geladen…" : "Werk-IDs nachladen"}
+                    </Btn>
+                  </div>
+                ) : null}
               </div>
 
               <div style={{
@@ -3725,6 +3838,8 @@
                 onLendBook={(b)=>setLendTargetBook(b)}
                 onAddSuggestedBook={addBookDb}
                 toast={toast}
+                sb={sb}
+                onReloadShelf={() => loadAll(session.user.id)}
               />
             )}
             {page==="friends" && (
