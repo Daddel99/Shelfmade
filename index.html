@@ -3796,7 +3796,12 @@
           open_library_work_key: normalizeOpenLibraryWorkKey(b.work_key || b.open_library_work_key),
           rating: null,
         };
-        const { data, error } = await sb.from("books").insert(row).select().single();
+        let resp = await sb.from("books").insert(row).select().single();
+        if (resp.error && /open_library_work_key|schema cache|column/i.test(resp.error.message || "")) {
+          const { open_library_work_key, ...rowWithoutWorkKey } = row;
+          resp = await sb.from("books").insert(rowWithoutWorkKey).select().single();
+        }
+        const { data, error } = resp;
         if (error) { toast(error.message); return false; }
         setBooks(prev => [data, ...prev]);
         toast(`${data.title} hinzugefügt`);
