@@ -1336,30 +1336,119 @@
       }
     }
 
-    function getAuthRedirectUrl() {
+    const PW_RECOVERY_INTENT_KEY = "shelfmade_pw_recovery_v1";
+
+    function getAuthRedirectUrl(forPasswordReset = false) {
       if (typeof window === "undefined") return "";
       try {
         const href = window.location.href.split("#")[0];
         const base = href.indexOf("?") >= 0 ? href.slice(0, href.indexOf("?")) : href;
         if (window.location.protocol === "file:") return "";
-        return base;
+        if (!forPasswordReset) return base;
+        return `${base}${base.includes("?") ? "&" : "?"}auth=recovery`;
       } catch {
         return "";
       }
     }
 
-    function urlIndicatesPasswordRecovery() {
+    function markPasswordRecoveryIntent() {
+      try { sessionStorage.setItem(PW_RECOVERY_INTENT_KEY, "1"); } catch (_) {}
+    }
+
+    function clearPasswordRecoveryIntent() {
+      try { sessionStorage.removeItem(PW_RECOVERY_INTENT_KEY); } catch (_) {}
+    }
+
+    function hasPasswordRecoveryIntent() {
+      try { return sessionStorage.getItem(PW_RECOVERY_INTENT_KEY) === "1"; } catch { return false; }
+    }
+
+    function getAuthUrlParams() {
+      const search = new URLSearchParams(window.location.search || "");
+      const hash = new URLSearchParams((window.location.hash || "").replace(/^#/, ""));
+      return { search, hash };
+    }
+
+    function urlHasRecoveryMarker() {
       if (typeof window === "undefined") return false;
       try {
-        const search = new URLSearchParams(window.location.search || "");
-        const hashRaw = (window.location.hash || "").replace(/^#/, "");
-        const hash = new URLSearchParams(hashRaw);
+        const { search, hash } = getAuthUrlParams();
+        if (search.get("auth") === "recovery") return true;
         const searchType = (search.get("type") || "").toLowerCase();
         const hashType = (hash.get("type") || "").toLowerCase();
         return searchType === "recovery" || hashType === "recovery";
       } catch {
         return false;
       }
+    }
+
+    function urlIndicatesPasswordRecovery() {
+      return urlHasRecoveryMarker() || hasPasswordRecoveryIntent();
+    }
+
+    /** PKCE-Code oder Hash-Tokens aus E-Mail-Link — Session wird noch ausgetauscht */
+    function authUrlHasPendingExchange() {
+      if (typeof window === "undefined") return false;
+      try {
+        const { search, hash } = getAuthUrlParams();
+        if (search.get("code")) return true;
+        if (hash.get("access_token")) return true;
+        return false;
+      } catch {
+        return false;
+      }
+    }
+
+    function readAuthCallbackError() {
+      if (typeof window === "undefined") return "";
+      try {
+        const { search, hash } = getAuthUrlParams();
+        const raw =
+          search.get("error_description") ||
+          hash.get("error_description") ||
+          search.get("error") ||
+          hash.get("error") ||
+          "";
+        if (!raw) return "";
+        try { return decodeURIComponent(String(raw).replace(/\+/g, " ")); }
+        catch { return String(raw); }
+      } catch {
+        return "";
+      }
+    }
+
+    function stripAuthParamsFromBrowserUrl() {
+      if (typeof window === "undefined") return;
+      try {
+        const u = new URL(window.location.href);
+        const drop = [
+          "code", "type", "auth", "error", "error_code", "error_description",
+          "access_token", "refresh_token", "expires_in", "token_type",
+        ];
+        drop.forEach((k) => u.searchParams.delete(k));
+        const hash = new URLSearchParams(u.hash.replace(/^#/, ""));
+        drop.forEach((k) => hash.delete(k));
+        u.hash = hash.toString() ? `#${hash.toString()}` : "";
+        const next = `${u.pathname}${u.search}${u.hash}`;
+        window.history.replaceState({}, document.title, next);
+      } catch (_) {}
+    }
+
+    /**
+     * Recovery-Links (PKCE): ?code=… — oft ohne type=recovery nach Redirect.
+     * Intent: ?auth=recovery (redirectTo) + sessionStorage.
+     * Code-Austausch übernimmt detectSessionInUrl im Supabase-Client (kein doppeltes exchange).
+     */
+    async function completeAuthCallbackFromUrl() {
+      if (typeof window === "undefined") return { recovery: false, error: "" };
+      const linkErr = readAuthCallbackError();
+      if (linkErr) {
+        stripAuthParamsFromBrowserUrl();
+        clearPasswordRecoveryIntent();
+        return { recovery: false, error: linkErr };
+      }
+      if (urlHasRecoveryMarker()) markPasswordRecoveryIntent();
+      return { recovery: urlIndicatesPasswordRecovery(), error: "" };
     }
 
     const COOKIE_CONSENT_KEY = "shelfmade_privacy_accept_v1";
@@ -1608,7 +1697,7 @@
         setBusy(true);
         try {
           if (mode === "forgot") {
-            const redir = getAuthRedirectUrl();
+            const redir = getAuthRedirectUrl(true);
             if (!redir || redir.startsWith("file:")) {
               setErr('Passwort-Link braucht eine http(s)-URL. Seite über einen kleinen Server öffnen (z. B. „Live Server“) oder in Supabase die Site-URL auf deine Online-Adresse setzen.');
               return;
@@ -1755,6 +1844,8 @@
           const { error } = await sb.auth.updateUser({ password: pw });
           if (error) throw error;
           toast?.("Neues Passwort gespeichert.");
+          clearPasswordRecoveryIntent();
+          stripAuthParamsFromBrowserUrl();
           await sb.auth.refreshSession();
           onDone?.();
         } catch (x) {
@@ -3600,8 +3691,11 @@
       const [loadingApp, setLoadingApp] = useState(true);
       const [showAddBook, setShowAddBook] = useState(false);
       const [toastMsg, setToastMsg] = useState(null);
-      const [passwordRecovery, setPasswordRecovery] = useState(false);
+      const [passwordRecovery, setPasswordRecovery] = useState(() =>
+        typeof window !== "undefined" && urlHasRecoveryMarker()
+      );
       const [authInitError, setAuthInitError] = useState(null);
+      const [recoveryLinkError, setRecoveryLinkError] = useState("");
       const [dataGateBlocked, setDataGateBlocked] = useState(null);
       const [authSessionHydrated, setAuthSessionHydrated] = useState(false);
 
@@ -3710,8 +3804,21 @@
       useEffect(() => {
         let unsub = () => {};
         (async () => {
-          const recoveryFromUrl = urlIndicatesPasswordRecovery();
-          if (recoveryFromUrl) setPasswordRecovery(true);
+          if (urlHasRecoveryMarker()) {
+            markPasswordRecoveryIntent();
+            setPasswordRecovery(true);
+          }
+
+          const cb = await completeAuthCallbackFromUrl();
+          if (cb.error) {
+            setRecoveryLinkError(cb.error);
+            setPasswordRecovery(false);
+          } else if (cb.recovery) {
+            markPasswordRecoveryIntent();
+            setPasswordRecovery(true);
+            setRecoveryLinkError("");
+          }
+
           try {
             const resp = await sb.auth.getSession();
             const sess = resp && resp.data ? resp.data.session : null;
@@ -3723,6 +3830,9 @@
               setLoadingApp(false);
             } else {
               setSession(sess);
+              if (sess && (hasPasswordRecoveryIntent() || urlIndicatesPasswordRecovery())) {
+                setPasswordRecovery(true);
+              }
               if (!sess) setLoadingApp(false);
             }
           } catch (e) {
@@ -3738,8 +3848,28 @@
             } = sb.auth.onAuthStateChange((event, s) => {
               setAuthInitError(null);
               setSession(s);
-              if (event === "PASSWORD_RECOVERY" || urlIndicatesPasswordRecovery()) {
+              if (event === "PASSWORD_RECOVERY") {
+                markPasswordRecoveryIntent();
                 setPasswordRecovery(true);
+                setRecoveryLinkError("");
+                stripAuthParamsFromBrowserUrl();
+              } else if (
+                (event === "SIGNED_IN" || event === "INITIAL_SESSION") &&
+                hasPasswordRecoveryIntent()
+              ) {
+                setPasswordRecovery(true);
+                if (authUrlHasPendingExchange() || urlHasRecoveryMarker()) {
+                  stripAuthParamsFromBrowserUrl();
+                }
+              } else if (event === "SIGNED_IN" && s && !hasPasswordRecoveryIntent()) {
+                if (authUrlHasPendingExchange() || urlHasRecoveryMarker()) {
+                  stripAuthParamsFromBrowserUrl();
+                }
+                setPasswordRecovery(false);
+              } else if (event === "INITIAL_SESSION" && s) {
+                if (authUrlHasPendingExchange() || urlHasRecoveryMarker()) {
+                  stripAuthParamsFromBrowserUrl();
+                }
               }
             });
             unsub = () => subscription.unsubscribe();
@@ -3759,14 +3889,26 @@
       }, [session?.user?.id]);
 
       useEffect(() => {
+        const recoveryPending =
+          passwordRecovery || hasPasswordRecoveryIntent() || urlHasRecoveryMarker();
+        const authExchangePending = authUrlHasPendingExchange() && !session?.user?.id;
+
         if (passwordRecovery && session?.user?.id) {
           setLoadingApp(false);
           return;
         }
-        if (session?.user?.id) {
+        if (recoveryPending && !session?.user?.id) {
+          setLoadingApp(false);
+          return;
+        }
+        if (authExchangePending) {
+          setLoadingApp(false);
+          return;
+        }
+        if (session?.user?.id && !passwordRecovery && !hasPasswordRecoveryIntent()) {
           setLoadingApp(true);
           loadAll(session.user.id);
-        } else {
+        } else if (!session?.user?.id && !recoveryPending) {
           setProfile(null);
           setBooks([]);
           setBorrowedItems([]);
@@ -3847,10 +3989,31 @@
 
       if (!session) {
         if (!authSessionHydrated) {
-          return <ShellLoadingOverlay subtitle="Sitzung wird geprüft…"/>;
+          return <ShellLoadingOverlay subtitle={
+            (urlHasRecoveryMarker() || authUrlHasPendingExchange())
+              ? "Reset-Link wird verarbeitet…"
+              : "Sitzung wird geprüft…"
+          }/>;
         }
         return (
           <div style={{ fontFamily:"'Crimson Pro',Georgia,serif", background:P.bg, minHeight:"100vh" }}>
+            {recoveryLinkError ? (
+              <div style={{
+                padding:18, margin:"max(24px, 4vw)",
+                marginBottom:0,
+                borderRadius:"16px",
+                border:`2px solid ${"#e8847a"}70`,
+                background:P.surfaceDark,
+                color:P.cream,
+                fontSize:14,
+                lineHeight:1.55,
+                whiteSpace:"pre-wrap",
+              }}>
+                <strong style={{ color:"#faa" }}>Passwort-Link ungültig oder abgelaufen.</strong><br/>
+                {recoveryLinkError}<br/><br/>
+                Bitte unter „Passwort vergessen?“ einen neuen Link anfordern. Jeder Link nur einmal verwenden.
+              </div>
+            ) : null}
             {authInitError ? (
               <div style={{
                 padding:18, margin:"max(24px, 4vw)",
@@ -3889,6 +4052,8 @@
               sb={sb}
               toast={toast}
               onDone={() => {
+                clearPasswordRecoveryIntent();
+                stripAuthParamsFromBrowserUrl();
                 setPasswordRecovery(false);
                 setLoadingApp(true);
                 loadAll(session.user.id);
